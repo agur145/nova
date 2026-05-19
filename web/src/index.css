@@ -1,0 +1,262 @@
+@import "tailwindcss";
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: #18191b;
+}
+
+/* TipTap 编辑器内容样式 */
+.editor-content .tiptap {
+  outline: none;
+  min-height: 100%;
+  color: var(--nova-editor-color, #d7dbe2);
+  font-family:
+    "Songti SC", "STSong", "Noto Serif CJK SC", "Source Han Serif SC",
+    Georgia, serif;
+  font-size: var(--nova-editor-font-size, 18px);
+  letter-spacing: 0.02em;
+  line-height: var(--nova-editor-line-height, 1.9);
+  max-width: 760px;
+  margin: 0 auto;
+  padding-bottom: 40vh;
+}
+
+.editor-content .tiptap p {
+  margin: 0;
+  line-height: var(--nova-editor-line-height, 1.9);
+  text-indent: 2em;
+}
+
+/* hardBreak 缩进：让 br 换行后的行也有 2em 缩进 */
+.editor-content .tiptap .nova-hard-break::after {
+  content: '';
+  display: inline-block;
+  width: 2em;
+}
+
+/* 文本自带缩进时，关闭 CSS 缩进避免双重缩进 */
+.editor-content.native-indent .tiptap p {
+  text-indent: 0;
+}
+.editor-content.native-indent .tiptap .nova-hard-break::after {
+  width: 0;
+}
+
+.editor-content .tiptap h1 {
+  font-size: 1.45em;
+  font-weight: 700;
+  margin: 0 0 0.65em;
+  line-height: 1.3;
+}
+
+.editor-content .tiptap h2 {
+  font-size: 1.2em;
+  font-weight: 600;
+  margin: 0.4em 0 0.3em;
+  line-height: 1.3;
+}
+
+.editor-content .tiptap h3 {
+  font-size: 1.05em;
+  font-weight: 600;
+  margin: 0.35em 0 0.2em;
+  line-height: 1.4;
+}
+
+.editor-content .tiptap ul,
+.editor-content .tiptap ol {
+  padding-left: 1.5em;
+  margin: 0.5em 0;
+}
+
+.editor-content .tiptap ul {
+  list-style-type: disc;
+}
+
+.editor-content .tiptap ol {
+  list-style-type: decimal;
+}
+
+.editor-content .tiptap li {
+  margin: 0.2em 0;
+}
+
+.editor-content .tiptap li p {
+  margin: 0;
+  text-indent: 0;
+}
+
+.editor-content .tiptap blockquote {
+  border-left: 3px solid var(--nova-editor-accent, #303238);
+  padding-left: 1em;
+  margin: 0;
+  color: var(--nova-editor-color, #d7dbe2);
+  opacity: 0.78;
+}
+
+.editor-content .tiptap blockquote p {
+  text-indent: 0;
+}
+
+.editor-content .tiptap code {
+  background: color-mix(in srgb, var(--nova-editor-accent, #303238) 75%, transparent);
+  border-radius: 3px;
+  padding: 0.15em 0.3em;
+  font-size: 0.9em;
+}
+
+.editor-content .tiptap pre {
+  background: #1f2937;
+  color: #e5e7eb;
+  border-radius: 6px;
+  padding: 0.75em 1em;
+  margin: 0.5em 0;
+  overflow-x: auto;
+}
+
+.editor-content .tiptap pre code {
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+
+.editor-content .tiptap hr {
+  border: none;
+  border-top: 1px solid var(--nova-editor-accent, #303238);
+  margin: 0.6em 0;
+}
+
+.editor-content .tiptap strong {
+  font-weight: 700;
+}
+
+.editor-content .tiptap em {
+  font-style: italic;
+}
+
+.editor-content .tiptap a {
+  color: #7aa2f7;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.editor-content .tiptap .nova-search-match {
+  border-radius: 3px;
+  background: rgba(250, 204, 21, 0.32);
+  scroll-margin-top: 48px;
+}
+
+.editor-content .tiptap .nova-search-current {
+  background: rgba(251, 146, 60, 0.55);
+  outline: 1px solid rgba(251, 191, 36, 0.75);
+}
+
+/* Placeholder 样式 */
+.editor-content .tiptap p.is-editor-empty:first-child::before {
+  color: color-mix(in srgb, var(--nova-editor-color, #d7dbe2) 45%, transparent);
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+/* AI 对话区 Markdown 输出样式 */
+.chat-agent-message {
+  line-height: 1.72;
+}
+
+.chat-agent-message p {
+  margin: 0.55em 0;
+}
+
+.chat-agent-message h1,
+.chat-agent-message h2,
+.chat-agent-message h3 {
+  color: #d7dbe2;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.chat-agent-message h1 {
+  font-size: 1.25em;
+  margin: 1em 0 0.45em;
+}
+
+.chat-agent-message h2 {
+  font-size: 1.12em;
+  margin: 0.9em 0 0.4em;
+}
+
+.chat-agent-message h3 {
+  font-size: 1em;
+  margin: 0.75em 0 0.35em;
+}
+
+.chat-agent-message ul,
+.chat-agent-message ol {
+  margin: 0.65em 0;
+  padding-left: 1.35em;
+}
+
+.chat-agent-message ul {
+  list-style: disc;
+}
+
+.chat-agent-message ol {
+  list-style: decimal;
+}
+
+.chat-agent-message li {
+  margin: 0.28em 0;
+}
+
+.chat-agent-message hr {
+  border: none;
+  border-top: 1px solid #303238;
+  margin: 1em 0;
+}
+
+.chat-agent-message code {
+  border-radius: 4px;
+  background: #303238;
+  padding: 0.12em 0.35em;
+  color: #d7dbe2;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.chat-agent-message pre {
+  overflow-x: auto;
+  border: 1px solid #303238;
+  border-radius: 8px;
+  background: #1f2023;
+  padding: 0.75em 1em;
+}
+
+.chat-agent-message pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.chat-agent-message table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  font-size: 0.92em;
+}
+
+.chat-agent-message th,
+.chat-agent-message td {
+  border: 1px solid #303238;
+  padding: 0.45em 0.65em;
+  text-align: left;
+}
+
+.chat-agent-message th {
+  background: #25262a;
+  color: #d7dbe2;
+}

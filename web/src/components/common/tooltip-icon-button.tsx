@@ -1,0 +1,43 @@
+import type { ReactNode } from 'react'
+import { Button, type buttonVariants } from '@/components/ui/button'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
+import type { VariantProps } from 'class-variance-authority'
+
+type TooltipIconButtonProps = React.ComponentProps<'button'> &
+  VariantProps<typeof buttonVariants> & {
+    label: string
+    children: ReactNode
+  }
+
+/** 带 Tooltip 的图标按钮，统一图标操作的可访问名称和提示行为。 */
+export function TooltipIconButton({
+  label,
+  children,
+  variant = 'ghost',
+  size = 'icon-xs',
+  className,
+  'aria-label': ariaLabel,
+  ...props
+}: TooltipIconButtonProps) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          variant={variant}
+          size={size}
+          className={className}
+          aria-label={ariaLabel || label}
+          {...props}
+        >
+          {children}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="right">{label}</TooltipContent>
+    </Tooltip>
+  )
+}

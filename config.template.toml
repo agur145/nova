@@ -1,0 +1,11 @@
+# Nova 配置文件
+# 模型配置
+openai_api_key = ""
+openai_base_url = "https://api.deepseek.com"
+openai_model = "deepseek-v4-pro"
+
+# 目录配置
+skills_dir = "./skills"
+nova_dir = "~/.nova" # 用户数据
+session_dir = "./data/sessions"
+workspace = "."

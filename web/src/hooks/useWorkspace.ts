@@ -1,0 +1,251 @@
+import { useState, useEffect, useCallback, useRef } from 'react'
+import {
+  copyWorkspaceItem,
+  createWorkspaceItem,
+  deleteWorkspaceItem,
+  getBooks,
+  getCurrentWorkspace,
+  getStyles,
+  moveWorkspaceItem,
+  readFile as readWorkspaceFile,
+  renameWorkspaceItem,
+  saveFile,
+} from '@/lib/api'
+import type { BookRecord } from '@/lib/api'
+
+export interface FileNode {
+  name: string
+  type: 'file' | 'dir'
+  children?: FileNode[]
+}
+
+const TREE_AUTO_REFRESH_INTERVAL_MS = 3000
+
+/** 工作区目录树 hook，负责获取目录结构、文件内容和保存 */
+export function useWorkspace() {
+  const [tree, setTree] = useState<FileNode[]>([])
+  const [loading, setLoading] = useState(true)
+  const [selectedFile, setSelectedFile] = useState<string | null>(null)
+  const [fileContent, setFileContent] = useState<string>('')
+  const [workspace, setWorkspace] = useState<string>('')
+  const [styles, setStyles] = useState<string[]>([])
+  const [books, setBooks] = useState<BookRecord[]>([])
+
+  // 用 ref 追踪最新 selectedFile，避免异步回调闭包捕获旧值
+  const selectedFileRef = useRef<string | null>(null)
+  selectedFileRef.current = selectedFile
+
+  /** 获取当前 workspace 路径 */
+  const fetchWorkspace = useCallback(async () => {
+    try {
+      const data = await getCurrentWorkspace()
+      setWorkspace(data.workspace || '')
+    } catch (e) {
+      console.error('获取 workspace 失败', e)
+    }
+  }, [])
+
+  const fetchTree = useCallback(async () => {
+    try {
+      const res = await fetch('/api/workspace/tree')
+      const data = await res.json()
+      setTree(data)
+    } catch (e) {
+      console.error('获取目录树失败', e)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  /** 获取 setting/styles 下的风格参考文件 */
+  const fetchStyles = useCallback(async () => {
+    try {
+      setStyles(await getStyles())
+    } catch (e) {
+      console.error('获取风格参考失败', e)
+      setStyles([])
+    }
+  }, [])
+
+  /** 获取最近打开的书籍列表 */
+  const fetchBooks = useCallback(async () => {
+    try {
+      setBooks(await getBooks())
+    } catch (e) {
+      console.error('获取书籍列表失败', e)
+      setBooks([])
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchWorkspace()
+    fetchTree()
+    fetchStyles()
+    fetchBooks()
+  }, [fetchWorkspace, fetchTree, fetchStyles, fetchBooks])
+
+  // 自动刷新目录树，覆盖 AI Agent 直接写入文件后的结构变化。
+  useEffect(() => {
+    const refreshIfVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void Promise.all([fetchTree(), fetchStyles()])
+      }
+    }
+
+    const timer = window.setInterval(refreshIfVisible, TREE_AUTO_REFRESH_INTERVAL_MS)
+    window.addEventListener('focus', refreshIfVisible)
+    document.addEventListener('visibilitychange', refreshIfVisible)
+
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', refreshIfVisible)
+      document.removeEventListener('visibilitychange', refreshIfVisible)
+    }
+  }, [fetchTree, fetchStyles])
+
+  /** 选中文件并加载内容 */
+  const selectFile = useCallback(async (path: string) => {
+    try {
+      const data = await readWorkspaceFile(path)
+      // React 18 自动批量：两个 setState 合并为一次渲染，确保 MarkdownEditor 拿到一致的 (fileName, content)
+      setSelectedFile(path)
+      setFileContent(data.content || '')
+    } catch (e) {
+      console.error('读取文件失败', e)
+    }
+  }, [])
+
+  /** 清空当前选中文件，用于关闭最后一个 tab 等场景 */
+  const clearSelectedFile = useCallback(() => {
+    setSelectedFile(null)
+    setFileContent('')
+  }, [])
+
+  /** 读取指定文件内容 */
+  const readFile = useCallback(async (path: string) => {
+    const data = await readWorkspaceFile(path)
+    return data.content || ''
+  }, [])
+
+  /** Agent 写入或创建文件后，刷新目录树并同步当前打开文件内容。 */
+  const refreshAfterAgentFileChange = useCallback(async (changedPath?: string) => {
+    await Promise.all([fetchTree(), fetchStyles()])
+    const currentFile = selectedFileRef.current
+    if (!currentFile) return
+
+    // changedPath 可能是绝对路径，selectedFile 是相对路径
+    // 判断是否为同一文件：相对路径匹配或绝对路径以相对路径结尾
+    if (changedPath) {
+      const isMatch = changedPath === currentFile || changedPath.endsWith('/' + currentFile)
+      if (!isMatch) return
+    }
+
+    try {
+      const data = await readWorkspaceFile(currentFile)
+      // 仅当选中文件没有在异步期间改变时才更新内容
+      if (selectedFileRef.current === currentFile) {
+        setFileContent(data.content || '')
+      }
+    } catch (e) {
+      console.error('刷新当前文件失败', e)
+    }
+  }, [fetchTree, fetchStyles])
+
+  /** 保存当前文件内容 */
+  const saveCurrentFile = useCallback(async (content: string): Promise<boolean> => {
+    if (!selectedFile) return false
+    try {
+      await saveFile(selectedFile, content)
+      return true
+    } catch (e) {
+      console.error('保存文件失败', e)
+      return false
+    }
+  }, [selectedFile])
+
+  /** 切换 workspace 后刷新所有状态 */
+  const refreshAll = useCallback(async () => {
+    setSelectedFile(null)
+    setFileContent('')
+    await Promise.all([fetchWorkspace(), fetchTree(), fetchStyles(), fetchBooks()])
+  }, [fetchWorkspace, fetchTree, fetchStyles, fetchBooks])
+
+  /** 新建文件或目录 */
+  const createItem = useCallback(async (path: string, type: 'file' | 'dir') => {
+    await createWorkspaceItem({ path, type, content: '' })
+    await Promise.all([fetchTree(), fetchStyles()])
+  }, [fetchTree, fetchStyles])
+
+  /** 删除文件或目录 */
+  const deleteItem = useCallback(async (path: string) => {
+    await deleteWorkspaceItem(path)
+    if (selectedFile === path || selectedFile?.startsWith(`${path}/`)) {
+      setSelectedFile(null)
+      setFileContent('')
+    }
+    await Promise.all([fetchTree(), fetchStyles()])
+  }, [fetchTree, fetchStyles, selectedFile])
+
+  /** 重命名文件或目录 */
+  const renameItem = useCallback(async (path: string, newName: string) => {
+    const result = await renameWorkspaceItem({ path, new_name: newName })
+    if (selectedFile === path) {
+      setSelectedFile(result.path)
+      await selectFile(result.path)
+    } else if (selectedFile?.startsWith(`${path}/`)) {
+      const nextPath = `${result.path}/${selectedFile.slice(path.length + 1)}`
+      setSelectedFile(nextPath)
+      await selectFile(nextPath)
+    }
+    await Promise.all([fetchTree(), fetchStyles()])
+  }, [fetchTree, fetchStyles, selectFile, selectedFile])
+
+  /** 复制文件或目录 */
+  const copyItem = useCallback(async (from: string, to: string) => {
+    await copyWorkspaceItem({ from, to })
+    await Promise.all([fetchTree(), fetchStyles()])
+  }, [fetchTree, fetchStyles])
+
+  /** 移动文件或目录 */
+  const moveItem = useCallback(async (from: string, to: string) => {
+    const result = await moveWorkspaceItem({ from, to })
+    if (selectedFile === from) {
+      setSelectedFile(result.path)
+      await selectFile(result.path)
+    } else if (selectedFile?.startsWith(`${from}/`)) {
+      const nextPath = `${result.path}/${selectedFile.slice(from.length + 1)}`
+      setSelectedFile(nextPath)
+      await selectFile(nextPath)
+    }
+    await Promise.all([fetchTree(), fetchStyles()])
+  }, [fetchTree, fetchStyles, selectFile, selectedFile])
+
+  /** 刷新目录树和风格参考 */
+  const refresh = useCallback(async () => {
+    await Promise.all([fetchTree(), fetchStyles()])
+  }, [fetchTree, fetchStyles])
+
+  return {
+    tree,
+    loading,
+    selectedFile,
+    fileContent,
+    workspace,
+    styles,
+    books,
+    selectFile,
+    clearSelectedFile,
+    saveCurrentFile,
+    readFile,
+    createItem,
+    deleteItem,
+    renameItem,
+    copyItem,
+    moveItem,
+    refresh,
+    refreshAfterAgentFileChange,
+    refreshAll,
+    refreshBooks: fetchBooks,
+    setWorkspace,
+  }
+}

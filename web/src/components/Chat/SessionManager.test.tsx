@@ -1,0 +1,81 @@
+import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { describe, expect, it, vi } from 'vitest'
+import { MessageList } from './MessageList'
+import { SessionManager } from './SessionManager'
+import type { SessionSummary } from '@/lib/api'
+
+const sessions: SessionSummary[] = [
+  { id: 'session-a', title: '设定讨论', active: true, message_count: 2, created_at: '', updated_at: '' },
+  { id: 'session-b', title: '正文续写', active: false, message_count: 1, created_at: '', updated_at: '' },
+]
+
+describe('SessionManager', () => {
+  it('从列表选择会话时触发切换回调', async () => {
+    const user = userEvent.setup()
+    const handleSwitch = vi.fn()
+
+    render(
+      <SessionManager
+        sessions={sessions}
+        activeSessionId="session-a"
+        onCreate={vi.fn()}
+        onSwitch={handleSwitch}
+        onRename={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    )
+
+    await user.click(screen.getByRole('combobox', { name: '选择会话' }))
+    await user.click(await screen.findByRole('option', { name: '正文续写 · 1 条' }))
+
+    expect(handleSwitch).toHaveBeenCalledWith('session-b')
+  })
+
+  it('支持重命名和删除会话入口', async () => {
+    const user = userEvent.setup()
+    const handleRename = vi.fn()
+    const handleDelete = vi.fn()
+
+    render(
+      <SessionManager
+        sessions={sessions}
+        activeSessionId="session-b"
+        onCreate={vi.fn()}
+        onSwitch={vi.fn()}
+        onRename={handleRename}
+        onDelete={handleDelete}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: '重命名会话 正文续写' }))
+    const input = screen.getByRole('textbox', { name: '会话标题' })
+    await user.clear(input)
+    await user.type(input, '新标题{Enter}')
+    await user.click(screen.getByRole('button', { name: '删除会话 正文续写' }))
+
+    expect(handleRename).toHaveBeenCalledWith('session-b', '新标题')
+    expect(handleDelete).toHaveBeenCalledWith('session-b')
+  })
+})
+
+describe('MessageList', () => {
+  it('展示 /clear 产生的上下文清理分界且保留前后消息', () => {
+    render(
+      <MessageList
+        isStreaming={false}
+        activityContent=""
+        messages={[
+          { type: 'message', role: 'user', content: '清理前问题' },
+          { type: 'clear', created_at: '2026-05-17T08:00:00Z' },
+          { type: 'message', role: 'assistant', content: '清理后回答' },
+        ]}
+      />,
+    )
+
+    expect(screen.getByText('清理前问题')).toBeInTheDocument()
+    expect(screen.getByRole('separator', { name: '上下文已清理' })).toBeInTheDocument()
+    expect(screen.getByText(/之前消息不再参与创作Agent上下文/)).toBeInTheDocument()
+    expect(screen.getByText('清理后回答')).toBeInTheDocument()
+  })
+})

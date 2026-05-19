@@ -1,0 +1,53 @@
+import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { describe, expect, it } from 'vitest'
+import { MessageItem } from './MessageItem'
+
+describe('MessageItem', () => {
+  it('稳定 assistant 消息使用完整 Markdown 渲染', () => {
+    render(<MessageItem message={{ role: 'assistant', content: '# 标题\n\n- 条目' }} />)
+
+    expect(screen.getByRole('heading', { name: '标题' })).toBeInTheDocument()
+    expect(screen.getByText('条目')).toBeInTheDocument()
+  })
+
+  it('流式 assistant 消息即时渲染常见 Markdown 结构', () => {
+    render(<MessageItem message={{ role: 'assistant', content: '# 实时标题\n- 实时条目\n`cmd`', streaming: true }} />)
+
+    expect(screen.getByText('实时标题')).toBeInTheDocument()
+    expect(screen.getByText('实时条目')).toBeInTheDocument()
+    expect(screen.getByText('cmd')).toBeInTheDocument()
+  })
+
+  it('思考过程流式时默认展开，结束后默认折叠但可手动展开', async () => {
+    const user = userEvent.setup()
+    const { rerender } = render(<MessageItem message={{ role: 'thinking', content: '正在分析', streaming: true }} />)
+
+    expect(screen.getByText('正在分析')).toBeInTheDocument()
+
+    rerender(<MessageItem message={{ role: 'thinking', content: '已经分析完', streaming: false }} />)
+    expect(screen.queryByText('已经分析完')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /思考过程/ }))
+    expect(screen.getByText('已经分析完')).toBeInTheDocument()
+  })
+
+  it('工具调用卡片展示工具名、摘要和成功结果', () => {
+    render(
+      <MessageItem
+        message={{
+          role: 'tool_call',
+          content: 'write_file\n{"path":"chapters/ch01.md"}',
+          name: 'write_file',
+          args: '{"path":"chapters/ch01.md"}',
+          status: 'success',
+          result: '写入完成',
+        }}
+      />,
+    )
+
+    expect(screen.getByText('调用工具')).toBeInTheDocument()
+    expect(screen.getByText('write_file')).toBeInTheDocument()
+    expect(screen.getByText('写入完成')).toBeInTheDocument()
+  })
+})

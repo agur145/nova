@@ -1,0 +1,142 @@
+package agent
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/cloudwego/eino/schema"
+
+	"nova/internal/book"
+)
+
+func TestMergeToolCalls(t *testing.T) {
+	idx := 0
+	calls := mergeToolCalls(nil, []schema.ToolCall{
+		{Index: &idx, Function: schema.FunctionCall{Name: "write_file", Arguments: `{"path":`}},
+	})
+	calls = mergeToolCalls(calls, []schema.ToolCall{
+		{Index: &idx, Function: schema.FunctionCall{Arguments: `"chapters/ch01.md"}`}},
+	})
+
+	if len(calls) != 1 {
+		t.Fatalf("期望 1 个 tool call，实际: %d", len(calls))
+	}
+	if calls[0].Function.Name != "write_file" {
+		t.Fatalf("工具名称未合并: %s", calls[0].Function.Name)
+	}
+	if calls[0].Function.Arguments != `{"path":"chapters/ch01.md"}` {
+		t.Fatalf("工具参数未合并: %s", calls[0].Function.Arguments)
+	}
+}
+
+func TestMergeToolCallsHandlesSparseIndexes(t *testing.T) {
+	idx := 2
+	calls := mergeToolCalls(nil, []schema.ToolCall{
+		{Index: &idx, ID: "call-2", Function: schema.FunctionCall{Name: "edit_file", Arguments: `{"path":`}},
+	})
+	calls = mergeToolCalls(calls, []schema.ToolCall{
+		{Index: &idx, Function: schema.FunctionCall{Arguments: `"chapters/ch02.md"}`}},
+	})
+
+	if len(calls) != 3 {
+		t.Fatalf("稀疏 index 应补齐切片长度，实际: %d", len(calls))
+	}
+	if calls[2].ID != "call-2" || calls[2].Function.Name != "edit_file" {
+		t.Fatalf("工具元信息未按 index 保留: %#v", calls[2])
+	}
+	if calls[2].Function.Arguments != `{"path":"chapters/ch02.md"}` {
+		t.Fatalf("工具参数未按 index 合并: %s", calls[2].Function.Arguments)
+	}
+}
+
+func TestAppendReferenceContextDedupesAndReportsReadFailure(t *testing.T) {
+	workspace := t.TempDir()
+	mustWriteTestFile(t, workspace, "chapters/ch01.md", "第一章正文")
+	service := book.NewService(workspace)
+
+	got := appendReferenceContext(service, "请参考", []string{
+		"chapters/ch01.md",
+		"chapters/ch01.md",
+		"chapters/missing.md",
+	})
+
+	assertContains(t, got, "请参考")
+	assertContains(t, got, "以下是用户引用的文件")
+	assertContains(t, got, "## @chapters/ch01.md")
+	assertContains(t, got, "```markdown\n第一章正文\n```")
+	assertContains(t, got, "## @chapters/missing.md")
+	assertContains(t, got, "读取失败：")
+	if count := strings.Count(got, "## @chapters/ch01.md"); count != 1 {
+		t.Fatalf("重复引用应去重，实际出现 %d 次\n%s", count, got)
+	}
+}
+
+func TestAppendStyleReferenceContextOnlyReadsStyleFiles(t *testing.T) {
+	workspace := t.TempDir()
+	mustWriteTestFile(t, workspace, "setting/styles/古龙.md", "短句留白")
+	mustWriteTestFile(t, workspace, "setting/styles/番茄.txt", "强冲突快节奏")
+	mustWriteTestFile(t, workspace, "chapters/ch01.md", "非风格文件")
+	service := book.NewService(workspace)
+
+	got := appendStyleReferenceContext(service, "按这个风格写", []string{
+		"古龙.md",
+		"番茄.txt",
+		"../chapters/ch01.md",
+	})
+
+	assertContains(t, got, "以下是用户本轮指定的风格参考")
+	assertContains(t, got, "## #古龙.md")
+	assertContains(t, got, "短句留白")
+	assertContains(t, got, "## #番茄.txt")
+	assertContains(t, got, "强冲突快节奏")
+	assertContains(t, got, "## #../chapters/ch01.md")
+	assertContains(t, got, "读取失败：")
+	if strings.Contains(got, "非风格文件") {
+		t.Fatalf("风格参考不应越界读取普通章节文件\n%s", got)
+	}
+}
+
+func TestAppendSelectionContextIncludesFileAndLineRange(t *testing.T) {
+	got := appendSelectionContext("修改这段", []TextSelectionRef{
+		{
+			FileName:  "chapters/ch03.md",
+			StartLine: 12,
+			EndLine:   18,
+			Content:   "选中的正文",
+		},
+	})
+
+	assertContains(t, got, "修改这段")
+	assertContains(t, got, "以下是用户在编辑器中选中的文本片段")
+	assertContains(t, got, "## 选中内容来自 chapters/ch03.md:L12-L18")
+	assertContains(t, got, "```\n选中的正文\n```")
+}
+
+func TestAppendPlanModeInstructionForbidsWriteTools(t *testing.T) {
+	got := appendPlanModeInstruction("重构章节")
+
+	assertContains(t, got, "[规划模式]")
+	assertContains(t, got, "可以使用 read_file 工具")
+	assertContains(t, got, "禁止使用 write_file、edit_file、delete_file")
+	assertContains(t, got, "用户需求：\n重构章节")
+}
+
+func assertContains(t *testing.T, got, want string) {
+	t.Helper()
+	if !strings.Contains(got, want) {
+		t.Fatalf("期望包含 %q\n实际内容:\n%s", want, got)
+	}
+}
+
+func mustWriteTestFile(t *testing.T, workspace, relPath, content string) {
+	t.Helper()
+	absPath := filepath.Join(workspace, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		t.Fatalf("创建测试目录失败: %v", err)
+	}
+	if err := os.WriteFile(absPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("写入测试文件失败: %v", err)
+	}
+}

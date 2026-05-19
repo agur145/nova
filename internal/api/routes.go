@@ -1,0 +1,52 @@
+package api
+
+import (
+	"github.com/cloudwego/hertz/pkg/app"
+	hertzserver "github.com/cloudwego/hertz/pkg/app/server"
+)
+
+// registerRoutes 注册 HTTP API 和静态文件路由。
+func (s *Server) registerRoutes(h *hertzserver.Hertz) {
+	api := h.Group("/api")
+	{
+		api.GET("/workspace/tree", s.handleWorkspaceTree)
+		api.GET("/workspace/file", s.handleWorkspaceFile)
+		api.POST("/workspace/file", s.handleWorkspaceFileWrite)
+		api.POST("/workspace/create", s.handleWorkspaceCreate)
+		api.POST("/workspace/delete", s.handleWorkspaceDelete)
+		api.POST("/workspace/rename", s.handleWorkspaceRename)
+		api.POST("/workspace/copy", s.handleWorkspaceCopy)
+		api.POST("/workspace/move", s.handleWorkspaceMove)
+		api.POST("/workspace/switch", s.handleWorkspaceSwitch)
+		api.GET("/workspace/current", s.handleWorkspaceCurrent)
+		api.GET("/books", s.handleBooks)
+		api.POST("/books/create", s.handleCreateBook)
+		api.POST("/books/remove", s.handleBookRemove)
+		api.GET("/books/info", s.handleBookInfo)
+		api.PUT("/books/info", s.handleUpdateBookInfo)
+		api.GET("/styles", s.handleStyles)
+		api.POST("/chat", s.handleChat)
+		api.GET("/chat/stream", s.handleChatStream)
+		api.GET("/chat/active", s.handleChatActive)
+		api.POST("/chat/abort", s.handleChatAbort)
+		api.GET("/git/status", s.handleGitStatus)
+		api.GET("/git/history", s.handleGitHistory)
+		api.GET("/git/diff", s.handleGitDiff)
+		api.POST("/git/init", s.handleGitInit)
+		api.POST("/git/commit", s.handleGitCommit)
+		api.POST("/git/rollback", s.handleGitRollback)
+		api.POST("/git/stash", s.handleGitStash)
+		api.POST("/git/stash/pop", s.handleGitStashPop)
+		api.POST("/git/command", s.handleGitCommand)
+		api.POST("/command", s.handleCommand)
+		api.GET("/session/messages", s.handleSessionMessages)
+		api.GET("/sessions", s.handleSessions)
+		api.POST("/sessions", s.handleSessionCreate)
+		api.POST("/sessions/switch", s.handleSessionSwitch)
+		api.POST("/sessions/rename", s.handleSessionRename)
+		api.POST("/sessions/delete", s.handleSessionDelete)
+		api.GET("/status", s.handleStatus)
+	}
+
+	h.StaticFS("/", &app.FS{Root: "web/", IndexNames: []string{"index.html"}})
+}

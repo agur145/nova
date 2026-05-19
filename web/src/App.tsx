@@ -1,0 +1,635 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { FileTree } from '@/components/Sidebar/FileTree'
+import { MessageList } from '@/components/Chat/MessageList'
+import { InputArea } from '@/components/Chat/InputArea'
+import { SessionManager } from '@/components/Chat/SessionManager'
+import { MarkdownEditor } from '@/components/Editor/MarkdownEditor'
+import { WorkspaceSelector } from '@/components/Header/WorkspaceSelector'
+import { GitPanel } from '@/components/Git/GitPanel'
+import { HomeView } from '@/components/Home/HomeView'
+import { WorkspaceLayout } from '@/components/layout/workspace-layout'
+import { CommandPalette } from '@/components/common/command-palette'
+import { TooltipIconButton } from '@/components/common/tooltip-icon-button'
+import { useWorkspace } from '@/hooks/useWorkspace'
+import { useChat } from '@/hooks/useChat'
+import { useWorkspaceHotkeys } from '@/hooks/use-workspace-hotkeys'
+import type { FileNode } from '@/hooks/useWorkspace'
+import { useWorkspaceStore } from '@/stores/workspace-store'
+import {
+  Bot,
+  CheckCircle2,
+  GitBranch,
+  FolderTree,
+  Home,
+  ListTodo,
+  RefreshCw,
+  Settings,
+  X,
+  Zap,
+} from 'lucide-react'
+
+const PROJECT_VISIBLE_KEY = 'nova.layout.projectVisible'
+const TABS_STORAGE_PREFIX = 'nova.layout.tabs:'
+const ACTIVE_TAB_STORAGE_PREFIX = 'nova.layout.activeTab:'
+const APP_VERSION = __APP_VERSION__
+
+/** 编辑区 Tab：承载文件或 Home（书籍管理）等页面 */
+type Tab =
+  | { kind: 'file'; path: string }
+  | { kind: 'home' }
+
+/** Tab 唯一标识，用于 React key 与持久化匹配 */
+function tabKey(tab: Tab): string {
+  return tab.kind === 'home' ? 'home' : `file:${tab.path}`
+}
+
+/** Tab 显示标题 */
+function tabLabel(tab: Tab): string {
+  if (tab.kind === 'home') return '书籍管理'
+  return tab.path.split('/').pop() || tab.path
+}
+
+function readLayoutBoolean(key: string, fallback: boolean) {
+  if (typeof window === 'undefined') return fallback
+  const value = window.localStorage.getItem(key)
+  if (value === null) return fallback
+  return value === 'true'
+}
+
+/** 按 workspace 分桶读取已打开 tab 列表 */
+function readTabsFor(workspace: string): Tab[] {
+  if (typeof window === 'undefined' || !workspace) return []
+  try {
+    const raw = window.localStorage.getItem(TABS_STORAGE_PREFIX + workspace)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.flatMap((item): Tab[] => {
+      if (item && typeof item === 'object') {
+        if (item.kind === 'home') return [{ kind: 'home' }]
+        if (item.kind === 'file' && typeof item.path === 'string') return [{ kind: 'file', path: item.path }]
+      }
+      // 兼容旧版本（仅文件路径字符串）
+      if (typeof item === 'string') return [{ kind: 'file', path: item }]
+      return []
+    })
+  } catch {
+    return []
+  }
+}
+
+/** 按 workspace 分桶读取激活的 tab key */
+function readActiveTabKeyFor(workspace: string): string | null {
+  if (typeof window === 'undefined' || !workspace) return null
+  return window.localStorage.getItem(ACTIVE_TAB_STORAGE_PREFIX + workspace)
+}
+
+function App() {
+  const [projectVisible, setProjectVisible] = useState(() => readLayoutBoolean(PROJECT_VISIBLE_KEY, true))
+  const [saveSignal, setSaveSignal] = useState(0)
+  const [gitRefreshSignal, setGitRefreshSignal] = useState(0)
+  const [openTabs, setOpenTabs] = useState<Tab[]>([])
+  const [activeTabKey, setActiveTabKey] = useState<string | null>(null)
+  const chatBootstrappedRef = useRef(false)
+  const rightPanel = useWorkspaceStore((state) => state.rightPanel)
+  const bottomPanel = useWorkspaceStore((state) => state.bottomPanel)
+  const commandOpen = useWorkspaceStore((state) => state.commandOpen)
+  const setRightPanel = useWorkspaceStore((state) => state.setRightPanel)
+  const setBottomPanel = useWorkspaceStore((state) => state.setBottomPanel)
+  const setCommandOpen = useWorkspaceStore((state) => state.setCommandOpen)
+  const setSelectedChapterId = useWorkspaceStore((state) => state.setSelectedChapterId)
+  const aiVisible = rightPanel === 'ai'
+  const versionsVisible = rightPanel === 'versions'
+  const taskVisible = bottomPanel === 'tasks'
+  const {
+    tree, loading, selectedFile, fileContent, workspace, styles, books,
+    selectFile, clearSelectedFile, saveCurrentFile, createItem, deleteItem, renameItem, copyItem, moveItem,
+    refresh, refreshAfterAgentFileChange, refreshAll, refreshBooks, setWorkspace,
+  } = useWorkspace()
+  const notifyGitChange = useCallback(() => {
+    setGitRefreshSignal(value => value + 1)
+  }, [])
+  const handleAgentFileChange = useCallback(async (path?: string) => {
+    await refreshAfterAgentFileChange(path)
+    notifyGitChange()
+  }, [notifyGitChange, refreshAfterAgentFileChange])
+  const {
+    messages,
+    sessions,
+    activeSessionId,
+    isStreaming,
+    activityContent,
+    references,
+    styleReferences,
+    textSelections,
+    send,
+    stop,
+    loadSessions,
+    loadHistory,
+    resumeActiveChat,
+    createChatSession,
+    switchChatSession,
+    renameChatSession,
+    deleteChatSession,
+    addReference,
+    removeReference,
+    addStyleReference,
+    removeStyleReference,
+    addTextSelection,
+    removeTextSelection,
+  } = useChat({ onAgentFileChange: handleAgentFileChange })
+
+  useEffect(() => {
+    if (chatBootstrappedRef.current) return
+    chatBootstrappedRef.current = true
+    void Promise.all([loadSessions(), loadHistory()]).then(() => resumeActiveChat())
+  }, [loadHistory, loadSessions, resumeActiveChat])
+
+  useEffect(() => { window.localStorage.setItem(PROJECT_VISIBLE_KEY, String(projectVisible)) }, [projectVisible])
+
+  // workspace 切换时从 localStorage 加载该 workspace 下的 tab 列表与激活项
+  useEffect(() => {
+    if (!workspace) {
+      setOpenTabs([])
+      setActiveTabKey(null)
+      return
+    }
+    const tabs = readTabsFor(workspace)
+    setOpenTabs(tabs)
+    const storedKey = readActiveTabKeyFor(workspace)
+    const activeKey = storedKey && tabs.some((t) => tabKey(t) === storedKey) ? storedKey : (tabs.length > 0 ? tabKey(tabs[0]) : null)
+    setActiveTabKey(activeKey)
+    // 若激活的是文件 tab，恢复编辑器内容
+    if (activeKey) {
+      const target = tabs.find((t) => tabKey(t) === activeKey)
+      if (target?.kind === 'file') {
+        void selectFile(target.path)
+      } else {
+        clearSelectedFile()
+      }
+    } else {
+      clearSelectedFile()
+    }
+  // 仅在 workspace 变更时触发；selectFile/clearSelectedFile 引用稳定
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspace])
+
+  // tabs 变化时持久化到 localStorage（按 workspace 分桶）
+  useEffect(() => {
+    if (typeof window === 'undefined' || !workspace) return
+    try {
+      window.localStorage.setItem(TABS_STORAGE_PREFIX + workspace, JSON.stringify(openTabs))
+    } catch (e) {
+      console.warn('保存 tab 列表失败', e)
+    }
+  }, [openTabs, workspace])
+
+  // 激活 tab 变化时持久化
+  useEffect(() => {
+    if (typeof window === 'undefined' || !workspace) return
+    if (activeTabKey) {
+      window.localStorage.setItem(ACTIVE_TAB_STORAGE_PREFIX + workspace, activeTabKey)
+    } else {
+      window.localStorage.removeItem(ACTIVE_TAB_STORAGE_PREFIX + workspace)
+    }
+  }, [activeTabKey, workspace])
+
+  // 选中文件时确保它出现在 tab 列表中并成为激活 tab
+  // 兜底：覆盖 selectFile 由 useWorkspace 内部触发的场景（如重命名/移动）
+  useEffect(() => {
+    if (!selectedFile) return
+    const key = `file:${selectedFile}`
+    setOpenTabs((prev) => (prev.some((t) => tabKey(t) === key) ? prev : [...prev, { kind: 'file', path: selectedFile }]))
+    setActiveTabKey(key)
+  }, [selectedFile])
+
+  /** workspace 切换后刷新目录树和聊天 */
+  const handleWorkspaceSwitch = (newPath: string) => {
+    setWorkspace(newPath)
+    refreshAll()
+    notifyGitChange()
+    void Promise.all([loadSessions(), loadHistory()]).then(() => resumeActiveChat())
+  }
+
+  /** 保存编辑器内容后刷新 Git 状态。 */
+  const handleSaveCurrentFile = useCallback(async (content: string) => {
+    const saved = await saveCurrentFile(content)
+    if (saved) notifyGitChange()
+    return saved
+  }, [notifyGitChange, saveCurrentFile])
+
+  /** 文件树写操作完成后刷新 Git 状态。 */
+  const handleCreateItem = useCallback(async (path: string, type: 'file' | 'dir') => {
+    await createItem(path, type)
+    notifyGitChange()
+  }, [createItem, notifyGitChange])
+
+  const handleDeleteItem = useCallback(async (path: string) => {
+    await deleteItem(path)
+    setOpenTabs((prev) => prev.filter((t) => t.kind !== 'file' || (t.path !== path && !t.path.startsWith(`${path}/`))))
+    notifyGitChange()
+  }, [deleteItem, notifyGitChange])
+
+  const handleRenameItem = useCallback(async (path: string, newName: string) => {
+    await renameItem(path, newName)
+    // 重命名后用旧路径前缀替换 tab 列表中的匹配项
+    const parent = path.replace(/\/[^/]*$/, '')
+    const newPath = parent ? `${parent}/${newName}` : newName
+    setOpenTabs((prev) => prev.map((t) => {
+      if (t.kind !== 'file') return t
+      if (t.path === path) return { kind: 'file', path: newPath }
+      if (t.path.startsWith(`${path}/`)) return { kind: 'file', path: `${newPath}${t.path.slice(path.length)}` }
+      return t
+    }))
+    notifyGitChange()
+  }, [notifyGitChange, renameItem])
+
+  const handleCopyItem = useCallback(async (from: string, to: string) => {
+    await copyItem(from, to)
+    notifyGitChange()
+  }, [copyItem, notifyGitChange])
+
+  const handleMoveItem = useCallback(async (from: string, to: string) => {
+    await moveItem(from, to)
+    setOpenTabs((prev) => prev.map((t) => {
+      if (t.kind !== 'file') return t
+      if (t.path === from) return { kind: 'file', path: to }
+      if (t.path.startsWith(`${from}/`)) return { kind: 'file', path: `${to}${t.path.slice(from.length)}` }
+      return t
+    }))
+    notifyGitChange()
+  }, [moveItem, notifyGitChange])
+
+  /** 选中文件时同步 UI Store 中的章节状态，并主动激活/创建对应 Tab。 */
+  const handleSelectFile = useCallback(async (path: string) => {
+    setSelectedChapterId(path)
+    // 直接同步 tab 状态，避免依赖 selectedFile 的 effect（重选同一文件时 effect 不会触发）
+    const key = `file:${path}`
+    setOpenTabs((prev) => (prev.some((t) => tabKey(t) === key) ? prev : [...prev, { kind: 'file', path }]))
+    setActiveTabKey(key)
+    await selectFile(path)
+  }, [selectFile, setSelectedChapterId])
+
+  /** 激活某个 tab：文件 tab 触发文件加载，Home tab 仅切换激活态 */
+  const handleActivateTab = useCallback((tab: Tab) => {
+    const key = tabKey(tab)
+    setActiveTabKey(key)
+    if (tab.kind === 'file') {
+      if (selectedFile !== tab.path) void handleSelectFile(tab.path)
+    }
+  }, [handleSelectFile, selectedFile])
+
+  /** 打开 Home（书籍管理）tab：已存在则定位，否则追加并激活 */
+  const openHomeTab = useCallback(() => {
+    setOpenTabs((prev) => (prev.some((t) => t.kind === 'home') ? prev : [...prev, { kind: 'home' }]))
+    setActiveTabKey('home')
+  }, [])
+
+  /** 关闭 tab；若关闭的是当前激活 tab，则切换到相邻 tab */
+  const handleCloseTab = useCallback((tab: Tab) => {
+    const key = tabKey(tab)
+    setOpenTabs((prev) => {
+      const idx = prev.findIndex((t) => tabKey(t) === key)
+      if (idx === -1) return prev
+      const next = prev.filter((t) => tabKey(t) !== key)
+      if (activeTabKey === key) {
+        if (next.length === 0) {
+          setActiveTabKey(null)
+          clearSelectedFile()
+        } else {
+          const fallback = next[idx] ?? next[idx - 1] ?? next[0]
+          handleActivateTab(fallback)
+        }
+      }
+      return next
+    })
+  }, [activeTabKey, clearSelectedFile, handleActivateTab])
+
+  const triggerSave = useCallback(() => setSaveSignal((value) => value + 1), [])
+  const continueWriting = useCallback(() => {
+    if (!isStreaming) send('/continue')
+  }, [isStreaming, send])
+
+  useWorkspaceHotkeys({
+    onSave: triggerSave,
+    onOpenCommand: () => setCommandOpen(true),
+    onGenerate: continueWriting,
+    onOpenDiff: () => setRightPanel('versions'),
+    onEscape: () => {
+      if (commandOpen) {
+        setCommandOpen(false)
+        return
+      }
+      if (rightPanel) setRightPanel(null)
+    },
+  })
+
+  const topBar = (
+    <>
+      <header className="flex h-7 shrink-0 items-center border-b border-[#303238] bg-[#202124] px-2 text-xs text-[#9aa0aa]">
+        <div className="font-medium text-[#d7dbe2]">Nova</div>
+        <div className="ml-2 truncate text-[#7f8590]">小说 IDE</div>
+      </header>
+
+      <WorkspaceSelector
+        workspace={workspace}
+        books={books}
+        onSwitch={handleWorkspaceSwitch}
+        onBooksChange={refreshBooks}
+      />
+    </>
+  )
+
+  const activityBar = (
+    <aside className="flex w-9 shrink-0 flex-col items-center border-r border-[#303238] bg-[#202124] py-2 text-[#7f8590]">
+      <TooltipIconButton
+        label="主页（书籍管理）"
+        onClick={openHomeTab}
+        className={`mb-4 hover:bg-[#303238] ${activeTabKey === 'home' ? 'text-[#d7dbe2]' : 'text-[#a8adb7]'}`}
+      >
+        <Home className="h-4 w-4" />
+      </TooltipIconButton>
+      <TooltipIconButton
+        label="显示/隐藏项目结构"
+        onClick={() => setProjectVisible((value) => !value)}
+        className={`mb-4 hover:bg-[#303238] ${projectVisible ? 'text-[#d7dbe2]' : 'text-[#6f7580]'}`}
+      >
+        <FolderTree className="h-4 w-4" />
+      </TooltipIconButton>
+      <TooltipIconButton
+        label="显示/隐藏 创作Agent"
+        onClick={() => setRightPanel(aiVisible ? null : 'ai')}
+        className={`mb-4 hover:bg-[#303238] ${aiVisible ? 'text-[#d7dbe2]' : 'text-[#6f7580]'}`}
+      >
+        <Bot className="h-4 w-4" />
+      </TooltipIconButton>
+      <TooltipIconButton
+        label="显示/隐藏任务面板"
+        onClick={() => setBottomPanel(taskVisible ? null : 'tasks')}
+        className={`mb-4 hover:bg-[#303238] ${taskVisible ? 'text-[#d7dbe2]' : 'text-[#6f7580]'}`}
+      >
+        <ListTodo className="h-4 w-4" />
+      </TooltipIconButton>
+      <TooltipIconButton
+        label="版本管理"
+        onClick={() => setRightPanel(versionsVisible ? null : 'versions')}
+        className={`mb-4 hover:bg-[#303238] ${versionsVisible ? 'text-[#d7dbe2]' : 'text-[#6f7580]'}`}
+      >
+        <GitBranch className="h-4 w-4" />
+      </TooltipIconButton>
+      <Settings className="mt-auto h-4 w-4" />
+    </aside>
+  )
+
+  const sidebar = (
+    <section className="flex h-full flex-col border-r border-[#303238] bg-[#202124]">
+      <div className="flex h-9 items-center justify-between border-b border-[#303238] px-3">
+        <span className="text-xs font-medium text-[#c5c9d1]">项目结构</span>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={refresh}
+            className="rounded p-1 text-[#858b96] hover:bg-[#303238]"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setProjectVisible(false)}
+            className="rounded px-1 text-[#858b96] hover:bg-[#303238] hover:text-[#d7dbe2]"
+          >
+            ×
+          </button>
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto p-2 text-xs">
+        {loading ? (
+          <div className="py-4 text-center text-[#858b96]">加载中…</div>
+        ) : tree.length === 0 ? (
+          <div className="py-4 text-center text-[#858b96]">暂无文件</div>
+        ) : (
+          <FileTree
+            nodes={tree}
+            selectedFile={selectedFile}
+            onSelectFile={handleSelectFile}
+            onReferenceFile={addReference}
+            onCreateItem={handleCreateItem}
+            onDeleteItem={handleDeleteItem}
+            onRenameItem={handleRenameItem}
+            onCopyItem={handleCopyItem}
+            onMoveItem={handleMoveItem}
+          />
+        )}
+      </div>
+    </section>
+  )
+
+  const activeTab = openTabs.find((t) => tabKey(t) === activeTabKey) ?? null
+
+  const tabBar = (
+    <div className="flex h-9 shrink-0 items-stretch overflow-x-auto border-b border-[#303238] bg-[#202124] text-xs">
+      {openTabs.length === 0 ? (
+        <div className="flex h-full items-center px-3 text-[#7f8590]">未打开任何页面</div>
+      ) : (
+        openTabs.map((tab) => {
+          const key = tabKey(tab)
+          const isActive = key === activeTabKey
+          const label = tabLabel(tab)
+          const tooltip = tab.kind === 'file' ? tab.path : '书籍管理'
+          return (
+            <div
+              key={key}
+              className={`group flex h-full shrink-0 items-center gap-2 border-r border-[#303238] px-3 ${
+                isActive
+                  ? 'border-t-2 border-t-[#2f7dd3] bg-[#25262a] text-[#d7dbe2]'
+                  : 'text-[#9aa0aa] hover:bg-[#25262a]/60'
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => { if (!isActive) handleActivateTab(tab) }}
+                className="max-w-[220px] truncate text-left"
+                title={tooltip}
+              >
+                {label}
+              </button>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); handleCloseTab(tab) }}
+                className="rounded p-0.5 text-[#7f8590] opacity-0 hover:bg-[#303238] hover:text-[#d7dbe2] group-hover:opacity-100"
+                aria-label={`关闭 ${label}`}
+                title="关闭"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          )
+        })
+      )}
+    </div>
+  )
+
+  const main = (
+    <main className="flex h-full min-w-0 flex-col border-r border-[#303238] bg-[#1b1c1f]">
+      {tabBar}
+      <div className="flex min-h-0 flex-1 flex-col">
+        {activeTab?.kind === 'home' ? (
+          <HomeView
+            workspace={workspace}
+            books={books}
+            onSwitch={handleWorkspaceSwitch}
+            onBooksChange={refreshBooks}
+          />
+        ) : activeTab?.kind === 'file' ? (
+          <MarkdownEditor
+            fileName={selectedFile}
+            content={fileContent}
+            onSave={handleSaveCurrentFile}
+            onQuoteSelection={addTextSelection}
+            saveSignal={saveSignal}
+          />
+        ) : (
+          <div className="flex h-full items-center justify-center text-xs text-[#7f8590]">
+            请从左侧目录树选择文件，或打开「书籍管理」
+          </div>
+        )}
+      </div>
+    </main>
+  )
+
+  const rightPanelContent = rightPanel === 'ai' ? (
+    <aside className="flex h-full flex-col bg-[#202124]">
+      <div className="flex h-9 items-center gap-3 border-b border-[#303238] px-3">
+        <div className="flex shrink-0 items-center gap-2 text-xs font-medium text-[#c5c9d1]">
+          <Bot className="h-3.5 w-3.5 text-[#7aa2f7]" />
+          创作Agent
+        </div>
+        <SessionManager
+          sessions={sessions}
+          activeSessionId={activeSessionId}
+          disabled={isStreaming}
+          onCreate={createChatSession}
+          onSwitch={switchChatSession}
+          onRename={renameChatSession}
+          onDelete={deleteChatSession}
+        />
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="text-[11px] text-[#7f8590]">{isStreaming ? '创作中…' : '等待'}</span>
+          <button
+            type="button"
+            onClick={() => setRightPanel(null)}
+            className="rounded px-1 text-xs text-[#858b96] hover:bg-[#303238] hover:text-[#d7dbe2]"
+          >
+            ×
+          </button>
+        </div>
+      </div>
+      <MessageList
+        messages={messages}
+        isStreaming={isStreaming}
+        activityContent={activityContent}
+      />
+      <InputArea
+        onSend={send}
+        onStop={stop}
+        disabled={isStreaming}
+        referencedFiles={references}
+        onReferenceRemove={removeReference}
+        fileSuggestions={flattenFileTree(tree)}
+        styleReferences={styleReferences}
+        onStyleReferenceAdd={addStyleReference}
+        onStyleReferenceRemove={removeStyleReference}
+        styleSuggestions={styles}
+        textSelections={textSelections}
+        onTextSelectionRemove={removeTextSelection}
+      />
+    </aside>
+  ) : rightPanel === 'versions' ? (
+    <GitPanel
+      workspace={workspace}
+      refreshSignal={gitRefreshSignal}
+      visible={versionsVisible}
+      onClose={() => setRightPanel(null)}
+    />
+  ) : null
+
+  const bottomPanelContent = taskVisible ? (
+    <footer className="flex h-full flex-col border-t border-[#303238] bg-[#202124]">
+      <div className="flex h-8 items-center border-b border-[#303238] px-3 text-xs">
+        <ListTodo className="mr-2 h-3.5 w-3.5 text-[#7aa2f7]" />
+        <span className="text-[#c5c9d1]">任务</span>
+        <span className="ml-2 rounded bg-[#0e639c] px-1.5 py-0.5 text-[10px] text-white">1</span>
+        <button
+          type="button"
+          onClick={() => setBottomPanel(null)}
+          className="ml-auto rounded px-1 text-[#858b96] hover:bg-[#303238] hover:text-[#d7dbe2]"
+        >
+          ×
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto px-4 py-2 font-mono text-[11px] leading-5 text-[#858b96]">
+        <div className="flex items-center gap-2 text-[#7aa2f7]">
+          <Zap className="h-3 w-3" />
+          <span>写作流</span>
+          <span className="ml-auto">0/1 ×</span>
+        </div>
+        <div className="mt-2 flex items-center gap-2">
+          <CheckCircle2 className="h-3 w-3 text-[#6cc477]" />
+          <span>WebUI 已就绪：目录树 / TipTap 编辑器 / 创作Agent</span>
+        </div>
+        <div className="ml-5">当前文件：{selectedFile || '未选择'}</div>
+        <div className="ml-5">Workspace：{workspace || '未设置'}</div>
+      </div>
+    </footer>
+  ) : null
+
+  const statusBar = (
+    <div className="flex h-6 shrink-0 items-center border-t border-[#303238] bg-[#1f2023] px-3 text-[11px] text-[#858b96]">
+      <span>Nova v{APP_VERSION}</span>
+      <span className="ml-4">小说 IDE</span>
+      <span className="ml-auto">{isStreaming ? '生成中' : '空闲'} · DeepSeek</span>
+    </div>
+  )
+
+  return (
+    <>
+      <WorkspaceLayout
+        topBar={topBar}
+        activityBar={activityBar}
+        sidebar={sidebar}
+        sidebarVisible={projectVisible}
+        main={main}
+        rightPanel={rightPanelContent}
+        rightPanelVisible={Boolean(rightPanelContent)}
+        bottomPanel={bottomPanelContent}
+        bottomPanelVisible={Boolean(bottomPanelContent)}
+        statusBar={statusBar}
+      />
+      <CommandPalette
+        open={commandOpen}
+        isStreaming={isStreaming}
+        taskPanelOpen={taskVisible}
+        onOpenChange={setCommandOpen}
+        onSave={triggerSave}
+        onOpenAgent={() => setRightPanel('ai')}
+        onOpenVersions={() => setRightPanel('versions')}
+        onToggleTasks={() => setBottomPanel(taskVisible ? null : 'tasks')}
+        onContinueWriting={continueWriting}
+        onClosePanels={() => {
+          setRightPanel(null)
+          setBottomPanel(null)
+        }}
+      />
+    </>
+  )
+}
+
+function flattenFileTree(nodes: FileNode[], basePath = ''): string[] {
+  return nodes.flatMap((node) => {
+    const path = basePath ? `${basePath}/${node.name}` : node.name
+    if (node.type === 'file') return [path]
+    return flattenFileTree(node.children || [], path)
+  })
+}
+
+export default App
