@@ -3,8 +3,6 @@ import type { ReactNode } from 'react'
 import type { LayeredSettings, Settings, SettingsLayer } from './types'
 import { fetchSettings, updateUserSettings, updateWorkspaceSettings } from './api'
 
-const NOVA_DIR_ONLY_USER: (keyof Settings)[] = ['nova_dir']
-
 export function SettingsView() {
   const [layered, setLayered] = useState<LayeredSettings | null>(null)
   const [activeLayer, setActiveLayer] = useState<SettingsLayer>('user')
@@ -54,9 +52,6 @@ export function SettingsView() {
     return `继承：${String(v)}`
   }
 
-  const isDisabled = (k: keyof Settings) =>
-    activeLayer === 'workspace' && NOVA_DIR_ONLY_USER.includes(k)
-
   return (
     <div className="flex h-full flex-col bg-[#1b1c1f] text-[#d7dbe2]">
       <div className="flex h-9 items-center gap-1 border-b border-[#303238] bg-[#202124] px-3 text-xs">
@@ -98,10 +93,9 @@ export function SettingsView() {
         <Section title="路径">
           <Text label="Skills 目录" value={draft.skills_dir} placeholder={placeholderFor('skills_dir')}
                 onChange={(v) => setField('skills_dir', v)} />
-          <Text label="用户数据目录 (nova_dir)" value={draft.nova_dir}
-                placeholder={isDisabled('nova_dir') ? '仅可在用户配置中修改' : placeholderFor('nova_dir')}
-                disabled={isDisabled('nova_dir')}
-                onChange={(v) => setField('nova_dir', v)} />
+          <ReadOnly label="Nova 数据目录" value={layered?.paths?.nova_dir} />
+          <ReadOnly label="用户配置文件" value={layered?.paths?.user_config} />
+          <ReadOnly label="工作区配置文件" value={layered?.paths?.workspace_config} />
         </Section>
 
         <Section title="编辑器">
@@ -137,6 +131,17 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
     <div className="mb-6">
       <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-[#7f8590]">{title}</div>
       <div className="space-y-2 rounded border border-[#303238] bg-[#202124] p-3">{children}</div>
+    </div>
+  )
+}
+
+function ReadOnly({ label, value }: { label: string; value?: string }) {
+  return (
+    <div className="flex items-center gap-3">
+      <span className="w-44 shrink-0 text-[#9aa0aa]">{label}</span>
+      <code className="flex-1 truncate rounded border border-[#303238] bg-[#18191c] px-2 py-1 text-[#9aa0aa]">
+        {value || '未设置'}
+      </code>
     </div>
   )
 }

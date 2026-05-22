@@ -3,6 +3,8 @@ package config
 import (
 	"os"
 	"path/filepath"
+
+	toml "github.com/pelletier/go-toml/v2"
 )
 
 // Config 保存 Nova 的全局配置
@@ -18,13 +20,23 @@ type Config struct {
 
 // LoadWithWorkspace 在已知 workspace 时读取分层配置（默认 < 用户级 < 工作区级 < 环境变量）。
 func LoadWithWorkspace(workspace string) (*Config, LayeredSettings, error) {
-	novaDir := os.Getenv("NOVA_DIR")
+	global := loadGlobalConfig()
+	novaDir := global.NovaDir
+	if novaDir == "" {
+		novaDir = defaultNovaDir()
+	}
+	if v := os.Getenv("NOVA_DIR"); v != "" {
+		novaDir = v
+	}
 	if novaDir == "" {
 		novaDir = defaultNovaDir()
 	}
 	novaDir = normalizePath(novaDir)
 
-	layered, err := LoadLayered(novaDir, workspace)
+	globalSettings := settingsFromConfig(global)
+	globalSettings.NovaDir = novaDir
+
+	layered, err := LoadLayeredWithGlobal(novaDir, workspace, globalSettings)
 	if err != nil {
 		return nil, LayeredSettings{}, err
 	}
@@ -59,13 +71,45 @@ func LoadWithWorkspace(workspace string) (*Config, LayeredSettings, error) {
 	return cfg, layered, nil
 }
 
-// Load 兼容旧入口：以当前目录作为 workspace 加载分层配置。
-func Load() *Config {
-	cwd, _ := os.Getwd()
-	if cwd == "" {
-		cwd = "."
+func loadGlobalConfig() *Config {
+	cfg := &Config{}
+	for _, path := range globalConfigCandidates() {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if err := toml.Unmarshal(data, cfg); err != nil {
+			continue
+		}
+		return cfg
 	}
-	cfg, _, err := LoadWithWorkspace(cwd)
+	return cfg
+}
+
+func settingsFromConfig(cfg *Config) Settings {
+	if cfg == nil {
+		return Settings{}
+	}
+	return Settings{
+		OpenAIAPIKey:  cfg.OpenAIAPIKey,
+		OpenAIBaseURL: cfg.OpenAIBaseURL,
+		OpenAIModel:   cfg.OpenAIModel,
+		SkillsDir:     cfg.SkillsDir,
+		NovaDir:       cfg.NovaDir,
+	}
+}
+
+func globalConfigCandidates() []string {
+	candidates := []string{"config.toml"}
+	if exe, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(exe), "config.toml"))
+	}
+	return candidates
+}
+
+// Load 加载启动配置；默认不指定 workspace，让 App 恢复最近书籍或进入无书籍状态。
+func Load() *Config {
+	cfg, _, err := LoadWithWorkspace("")
 	if err != nil || cfg == nil {
 		// fallback：返回纯默认值 + env，保持启动不挂
 		d := DefaultSettings()
@@ -74,15 +118,31 @@ func Load() *Config {
 			OpenAIModel:         d.OpenAIModel,
 			SkillsDir:           d.SkillsDir,
 			NovaDir:             normalizePath(d.NovaDir),
-			Workspace:           cwd,
 			ResumeLastWorkspace: true,
 		}
 		overrideFromEnv(cfg)
-		if abs, err := filepath.Abs(cfg.Workspace); err == nil {
-			cfg.Workspace = abs
+		if cfg.Workspace != "" {
+			if abs, err := filepath.Abs(cfg.Workspace); err == nil {
+				cfg.Workspace = abs
+			}
 		}
 		if cfg.SkillsDir != "" {
 			cfg.SkillsDir = normalizePath(cfg.SkillsDir)
+		}
+	}
+	return cfg
+}
+
+// LoadForWorkspace 加载配置并明确指定 workspace，用于 CLI 参数场景。
+func LoadForWorkspace(workspace string) *Config {
+	cfg, _, err := LoadWithWorkspace(workspace)
+	if err != nil || cfg == nil {
+		cfg = Load()
+		cfg.Workspace = workspace
+	}
+	if cfg.Workspace != "" {
+		if abs, err := filepath.Abs(cfg.Workspace); err == nil {
+			cfg.Workspace = abs
 		}
 	}
 	return cfg

@@ -22,6 +22,9 @@ func TestAppSettingsReturnsLayered(t *testing.T) {
 	if layered.Effective.OpenAIBaseURL == "" {
 		t.Fatalf("default BaseURL should be present")
 	}
+	if layered.Paths.UserConfig == "" || layered.Paths.WorkspaceConfig == "" || layered.Paths.NovaDir == "" {
+		t.Fatalf("settings paths should be exposed: %+v", layered.Paths)
+	}
 }
 
 func TestAppUpdateUserSettingsPersists(t *testing.T) {

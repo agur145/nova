@@ -3,7 +3,6 @@ export interface Settings {
   openai_base_url?: string
   openai_model?: string
   skills_dir?: string
-  nova_dir?: string
   auto_save_enabled?: boolean | null
   auto_save_interval_ms?: number | null
   chapter_filename_format?: string
@@ -12,11 +11,19 @@ export interface Settings {
   plan_mode_default?: boolean | null
 }
 
+export interface SettingsPaths {
+  nova_dir: string
+  user_config: string
+  workspace_config: string
+}
+
 export interface LayeredSettings {
   default: Settings
+  global: Settings
   user: Settings
   workspace: Settings
   effective: Settings
+  paths: SettingsPaths
 }
 
 export type SettingsLayer = 'user' | 'workspace'

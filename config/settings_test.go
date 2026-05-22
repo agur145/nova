@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -82,6 +83,25 @@ func TestWriteThenReadSettings(t *testing.T) {
 	}
 }
 
+func TestWriteSettingsFileFiltersNovaDir(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.toml")
+	in := Settings{OpenAIModel: "abc", NovaDir: "/tmp/ignored"}
+	if err := WriteSettingsFile(p, in); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) == "" {
+		t.Fatalf("settings file should not be empty")
+	}
+	if strings.Contains(string(data), "nova_dir") {
+		t.Fatalf("nova_dir should not be persisted in editable settings: %s", string(data))
+	}
+}
+
 func TestLoadLayeredAppliesAllLayers(t *testing.T) {
 	home := t.TempDir()
 	ws := t.TempDir()
@@ -110,5 +130,33 @@ func TestLoadLayeredAppliesAllLayers(t *testing.T) {
 	}
 	if layered.User.OpenAIModel != "user-model" {
 		t.Fatalf("raw user should be preserved")
+	}
+}
+
+func TestLoadLayeredIgnoresNovaDirFromEditableLayers(t *testing.T) {
+	home := t.TempDir()
+	ws := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("nova_dir = \"/tmp/user\"\nopenai_model = \"user-model\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(ws, ".nova"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, ".nova", "config.toml"), []byte("nova_dir = \"/tmp/ws\"\nopenai_model = \"ws-model\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	layered, err := LoadLayered(home, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if layered.User.NovaDir != "" || layered.Workspace.NovaDir != "" {
+		t.Fatalf("nova_dir should be filtered from editable layers: user=%q workspace=%q", layered.User.NovaDir, layered.Workspace.NovaDir)
+	}
+	if layered.Effective.NovaDir != normalizePath(home) {
+		t.Fatalf("editable layers should not override startup nova_dir: %q", layered.Effective.NovaDir)
+	}
+	if layered.Effective.OpenAIModel != "ws-model" {
+		t.Fatalf("other editable fields should still merge: %q", layered.Effective.OpenAIModel)
 	}
 }

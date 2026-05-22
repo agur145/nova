@@ -1,12 +1,13 @@
 # Nova 配置文件模板
 # 三层加载优先级（低 → 高）：
 #   1. 内置默认值
-#   2. 用户级：~/.nova/config.toml（或 NOVA_DIR/config.toml）
-#   3. 工作区级：<workspace>/.nova/config.toml
+#   2. 全局启动配置：项目根或可执行文件旁 config.toml（用于 nova_dir 等启动级参数）
+#   3. 用户级：<nova_dir>/config.toml
+#   4. 工作区级：<workspace>/.nova/config.toml
 # 环境变量（OPENAI_API_KEY、OPENAI_MODEL 等）始终最高优先级，仅运行时覆盖，不写盘。
 #
 # 字段留空表示继承上层。
-# nova_dir 仅在用户级生效（工作区级会被忽略）。
+# nova_dir 仅在全局启动配置或 NOVA_DIR 环境变量中生效；用户级/工作区级会忽略并过滤该字段。
 
 # 模型
 openai_api_key = ""

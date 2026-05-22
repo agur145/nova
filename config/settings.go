@@ -101,10 +101,19 @@ const (
 
 // LayeredSettings 暴露三层快照及合并后的 effective 值。
 type LayeredSettings struct {
-	Default   Settings `json:"default"`
-	User      Settings `json:"user"`
-	Workspace Settings `json:"workspace"`
-	Effective Settings `json:"effective"`
+	Default   Settings      `json:"default"`
+	Global    Settings      `json:"global"`
+	User      Settings      `json:"user"`
+	Workspace Settings      `json:"workspace"`
+	Effective Settings      `json:"effective"`
+	Paths     SettingsPaths `json:"paths"`
+}
+
+// SettingsPaths 是设置页只读展示的真实配置路径。
+type SettingsPaths struct {
+	NovaDir         string `json:"nova_dir"`
+	UserConfig      string `json:"user_config"`
+	WorkspaceConfig string `json:"workspace_config"`
 }
 
 // ReadSettingsFile 读取 TOML，文件不存在时返回零值且无错误。
@@ -120,7 +129,7 @@ func ReadSettingsFile(path string) (Settings, error) {
 	if err := toml.Unmarshal(data, &s); err != nil {
 		return Settings{}, fmt.Errorf("解析 %s 失败: %w", path, err)
 	}
-	return s, nil
+	return sanitizeEditableSettings(s), nil
 }
 
 // WriteSettingsFile 写入 TOML，自动创建父目录。
@@ -128,7 +137,7 @@ func WriteSettingsFile(path string, s Settings) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("创建目录失败: %w", err)
 	}
-	data, err := toml.Marshal(s)
+	data, err := toml.Marshal(sanitizeEditableSettings(s))
 	if err != nil {
 		return fmt.Errorf("序列化失败: %w", err)
 	}
@@ -154,6 +163,12 @@ func WorkspaceConfigPath(workspace string) string {
 // LoadLayered 读取用户级 + 工作区级配置并与默认值合并。
 // novaDir 为空时使用默认 ~/.nova。
 func LoadLayered(novaDir, workspace string) (LayeredSettings, error) {
+	return LoadLayeredWithGlobal(novaDir, workspace, Settings{})
+}
+
+// LoadLayeredWithGlobal 读取用户级 + 工作区级配置，并加入全局启动配置层。
+func LoadLayeredWithGlobal(novaDir, workspace string, global Settings) (LayeredSettings, error) {
+	novaDir = normalizePath(novaDir)
 	user, err := ReadSettingsFile(UserConfigPath(novaDir))
 	if err != nil {
 		return LayeredSettings{}, err
@@ -166,6 +181,29 @@ func LoadLayered(novaDir, workspace string) (LayeredSettings, error) {
 		}
 	}
 	def := DefaultSettings()
-	eff := Merge(Merge(def, user), ws)
-	return LayeredSettings{Default: def, User: user, Workspace: ws, Effective: eff}, nil
+	def.NovaDir = novaDir
+	if global.NovaDir == "" {
+		global.NovaDir = novaDir
+	} else {
+		global.NovaDir = normalizePath(global.NovaDir)
+	}
+	eff := Merge(Merge(Merge(def, global), user), ws)
+	return LayeredSettings{
+		Default:   def,
+		Global:    global,
+		User:      user,
+		Workspace: ws,
+		Effective: eff,
+		Paths: SettingsPaths{
+			NovaDir:         novaDir,
+			UserConfig:      UserConfigPath(novaDir),
+			WorkspaceConfig: WorkspaceConfigPath(workspace),
+		},
+	}, nil
+}
+
+func sanitizeEditableSettings(s Settings) Settings {
+	// nova_dir 是启动级定位参数，不能由用户级/工作区级配置反向修改自身位置。
+	s.NovaDir = ""
+	return s
 }
