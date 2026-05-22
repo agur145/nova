@@ -7,6 +7,7 @@ import { MarkdownEditor } from '@/components/Editor/MarkdownEditor'
 import { WorkspaceSelector } from '@/components/Header/WorkspaceSelector'
 import { GitPanel } from '@/components/Git/GitPanel'
 import { HomeView } from '@/components/Home/HomeView'
+import { SettingsView } from '@/features/settings/SettingsView'
 import { WorkspaceLayout } from '@/components/layout/workspace-layout'
 import { CommandPalette } from '@/components/common/command-palette'
 import { TooltipIconButton } from '@/components/common/tooltip-icon-button'
@@ -37,15 +38,19 @@ const APP_VERSION = __APP_VERSION__
 type Tab =
   | { kind: 'file'; path: string }
   | { kind: 'home' }
+  | { kind: 'settings' }
 
 /** Tab 唯一标识，用于 React key 与持久化匹配 */
 function tabKey(tab: Tab): string {
-  return tab.kind === 'home' ? 'home' : `file:${tab.path}`
+  if (tab.kind === 'home') return 'home'
+  if (tab.kind === 'settings') return 'settings'
+  return `file:${tab.path}`
 }
 
 /** Tab 显示标题 */
 function tabLabel(tab: Tab): string {
   if (tab.kind === 'home') return '书籍管理'
+  if (tab.kind === 'settings') return '设置'
   return tab.path.split('/').pop() || tab.path
 }
 
@@ -67,6 +72,7 @@ function readTabsFor(workspace: string): Tab[] {
     return parsed.flatMap((item): Tab[] => {
       if (item && typeof item === 'object') {
         if (item.kind === 'home') return [{ kind: 'home' }]
+        if (item.kind === 'settings') return [{ kind: 'settings' }]
         if (item.kind === 'file' && typeof item.path === 'string') return [{ kind: 'file', path: item.path }]
       }
       // 兼容旧版本（仅文件路径字符串）
@@ -285,6 +291,12 @@ function App() {
     setActiveTabKey('home')
   }, [])
 
+  /** 打开设置 tab：已存在则定位，否则追加并激活 */
+  const openSettingsTab = useCallback(() => {
+    setOpenTabs((prev) => (prev.some((t) => t.kind === 'settings') ? prev : [...prev, { kind: 'settings' }]))
+    setActiveTabKey('settings')
+  }, [])
+
   /** 关闭 tab；若关闭的是当前激活 tab，则切换到相邻 tab */
   const handleCloseTab = useCallback((tab: Tab) => {
     const key = tabKey(tab)
@@ -377,7 +389,13 @@ function App() {
       >
         <GitBranch className="h-4 w-4" />
       </TooltipIconButton>
-      <Settings className="mt-auto h-4 w-4" />
+      <TooltipIconButton
+        label="设置"
+        onClick={openSettingsTab}
+        className={`mt-auto hover:bg-[#303238] ${activeTabKey === 'settings' ? 'text-[#d7dbe2]' : 'text-[#a8adb7]'}`}
+      >
+        <Settings className="h-4 w-4" />
+      </TooltipIconButton>
     </aside>
   )
 
@@ -435,7 +453,7 @@ function App() {
           const key = tabKey(tab)
           const isActive = key === activeTabKey
           const label = tabLabel(tab)
-          const tooltip = tab.kind === 'file' ? tab.path : '书籍管理'
+          const tooltip = tab.kind === 'file' ? tab.path : label
           return (
             <div
               key={key}
@@ -480,6 +498,8 @@ function App() {
             onSwitch={handleWorkspaceSwitch}
             onBooksChange={refreshBooks}
           />
+        ) : activeTab?.kind === 'settings' ? (
+          <SettingsView />
         ) : activeTab?.kind === 'file' ? (
           <MarkdownEditor
             fileName={selectedFile}
