@@ -1,11 +1,28 @@
-# Nova 配置文件
-# 模型配置
+# Nova 配置文件模板
+# 三层加载优先级（低 → 高）：
+#   1. 内置默认值
+#   2. 用户级：~/.nova/config.toml（或 NOVA_DIR/config.toml）
+#   3. 工作区级：<workspace>/.nova/config.toml
+# 环境变量（OPENAI_API_KEY、OPENAI_MODEL 等）始终最高优先级，仅运行时覆盖，不写盘。
+#
+# 字段留空表示继承上层。
+# nova_dir 仅在用户级生效（工作区级会被忽略）。
+
+# 模型
 openai_api_key = ""
 openai_base_url = "https://api.deepseek.com"
 openai_model = "deepseek-v4-pro"
 
-# 目录配置
+# 路径
 skills_dir = "./skills"
-nova_dir = "~/.nova" # 用户数据
-session_dir = "./data/sessions"
-workspace = "."
+nova_dir = "~/.nova"
+
+# 编辑器
+auto_save_enabled = true
+auto_save_interval_ms = 1500
+chapter_filename_format = "ch{NN}-{title}.md"
+
+# Agent
+max_iteration = 50
+model_max_retries = 5
+plan_mode_default = false
