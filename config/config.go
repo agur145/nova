@@ -171,7 +171,7 @@ func overrideFromEnv(cfg *Config) {
 }
 
 func defaultNovaDir() string {
-	return "~/.nova"
+	return "./.nova"
 }
 
 func normalizePath(path string) string {

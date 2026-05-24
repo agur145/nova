@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- 后端 `config`：默认 `NovaDir` 由 `~/.nova` 改为后端运行目录下的 `./.nova`，未设置 `NOVA_DIR` 环境变量时使用该相对路径解析为绝对路径；同步更新 `config.template.toml`、`README.md` 中的示例及测试 `TestLoadDefaultsNovaDirToHomeNova`
+
 ## [v0.1.3] - 2026-05-24
 
 ### Fixed

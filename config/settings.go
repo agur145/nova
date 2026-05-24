@@ -55,7 +55,7 @@ func DefaultSettings() Settings {
 		OpenAIBaseURL:         "https://api.deepseek.com",
 		OpenAIModel:           "deepseek-v4-pro",
 		SkillsDir:             "./skills",
-		NovaDir:               "~/.nova",
+		NovaDir:               "./.nova",
 		AutoSaveEnabled:       boolPtr(true),
 		AutoSaveIntervalMs:    intPtr(1500),
 		ChapterFilenameFormat: "ch{NN}-{title}.md",
@@ -173,7 +173,7 @@ func WriteSettingsFile(path string, s Settings) error {
 // UserConfigPath 计算用户级配置路径。novaDir 已经过 normalizePath 处理。
 func UserConfigPath(novaDir string) string {
 	if novaDir == "" {
-		novaDir = normalizePath("~/.nova")
+		novaDir = normalizePath("./.nova")
 	}
 	return filepath.Join(novaDir, UserConfigFilename)
 }
@@ -184,7 +184,7 @@ func WorkspaceConfigPath(workspace string) string {
 }
 
 // LoadLayered 读取用户级 + 工作区级配置并与默认值合并。
-// novaDir 为空时使用默认 ~/.nova。
+// novaDir 为空时使用默认 ./.nova（后端运行目录下）。
 func LoadLayered(novaDir, workspace string) (LayeredSettings, error) {
 	return LoadLayeredWithGlobal(novaDir, workspace, Settings{})
 }

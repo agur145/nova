@@ -16,7 +16,7 @@ openai_model = "deepseek-v4-pro"
 
 # 路径
 skills_dir = "./skills"
-nova_dir = "~/.nova"
+nova_dir = "./.nova"
 
 # 编辑器
 auto_save_enabled = true

@@ -66,7 +66,7 @@ export OPENAI_MODEL="deepseek-v4-pro"
 
 ```bash
 export NOVA_WORKSPACE="/path/to/your-novel"
-export NOVA_DIR="$HOME/.nova"
+export NOVA_DIR="./.nova"
 export NOVA_SKILLS_DIR="./skills"
 export NOVA_BACKEND_PORT="8080"
 export NOVA_FRONTEND_PORT="5173"
