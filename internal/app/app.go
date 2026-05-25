@@ -231,12 +231,14 @@ func (a *App) StartInteractiveTask(storyID, branchID, message string) *Task {
 	store := a.interactive
 	bookService := a.bookService
 	chatService := a.chatService
+	novaDir := a.cfg.NovaDir
+	workspace := a.workspace
 	a.mu.Unlock()
 
 	req := agent.ChatRequest{
-		Message: message + "\n\n请根据当前互动故事上下文继续剧情，只输出本回合 narrative 正文。",
+		Message: message,
 	}
-	conversation := newInteractiveConversation(store, storyID, branchID, message)
+	conversation := newInteractiveConversation(store, novaDir, workspace, storyID, branchID, message)
 	task := NewTask(func(ctx context.Context, task *Task, emit func(agent.Event)) {
 		log.Printf("[interactive-agent-task] run begin id=%s story_id=%s branch_id=%s message_len=%d", task.ID(), storyID, branchID, len(message))
 		chatService.Run(ctx, runner, conversation, bookService, req, emit)

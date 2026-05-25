@@ -6,6 +6,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { MessageList } from '@/components/Chat/MessageList'
 import type { ChatMessage } from '@/lib/api'
 import { sendInteractiveMessage } from '../api'
+import { createInteractiveNarrativeFilter } from '../stream-parser'
 import type { Snapshot } from '../types'
 
 interface StoryStageProps {
@@ -49,6 +50,7 @@ export function StoryStage({ storyId, branchId, snapshot, onDone }: StoryStagePr
     setActivityContent('正在连接 AI Agent…')
     setLiveMessages([{ role: 'user', content: message }])
     setStreaming(true)
+    const narrativeFilter = createInteractiveNarrativeFilter()
     try {
       const stream = await sendInteractiveMessage({ mode: 'story', story_id: storyId, branch: branchId, message })
       const reader = stream.getReader()
@@ -58,7 +60,8 @@ export function StoryStage({ storyId, branchId, snapshot, onDone }: StoryStagePr
         switch (value.event) {
           case 'chunk': {
             const data = JSON.parse(value.data)
-            appendAssistantMessage(data.content || '')
+            const visible = narrativeFilter.push(data.content || '')
+            if (visible) appendAssistantMessage(visible)
             setActivityContent('')
             break
           }
@@ -107,6 +110,8 @@ export function StoryStage({ storyId, branchId, snapshot, onDone }: StoryStagePr
             break
           }
           case 'done': {
+            const visible = narrativeFilter.flush()
+            if (visible) appendAssistantMessage(visible)
             setActivityContent('完成')
             break
           }

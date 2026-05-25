@@ -1,6 +1,7 @@
 package interactive
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -91,6 +92,76 @@ func TestSnapshotAppliesTurnAndStateDelta(t *testing.T) {
 	events := snapshot.State["events"].([]any)
 	if len(events) != 1 {
 		t.Fatalf("unexpected events: %#v", events)
+	}
+}
+
+func TestAppendTurnWithStatePersistsTurnAndDeltaAtomically(t *testing.T) {
+	store := NewStore(t.TempDir())
+	story, err := store.CreateStory(CreateStoryRequest{
+		Title:         "酒馆",
+		Origin:        "推门进入酒馆",
+		StoryTellerID: "classic",
+	})
+	if err != nil {
+		t.Fatalf("CreateStory failed: %v", err)
+	}
+
+	turn, delta, err := store.AppendTurnWithState(story.ID, AppendTurnWithStateRequest{
+		BranchID:  "main",
+		User:      "我点燃火把",
+		Narrative: "火光照亮了墙上的新线索。",
+		Ops: []StateOp{
+			{Op: "set", Path: "on_stage", Value: []any{"林川"}},
+			{Op: "merge", Path: "characters.林川", Value: map[string]any{"location": "黄泉酒馆"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AppendTurnWithState failed: %v", err)
+	}
+	if delta == nil {
+		t.Fatal("expected state_delta event")
+	}
+	if delta.ParentID != turn.ID {
+		t.Fatalf("delta parent = %q, want %q", delta.ParentID, turn.ID)
+	}
+
+	snapshot, err := store.Snapshot(story.ID, "main")
+	if err != nil {
+		t.Fatalf("Snapshot failed: %v", err)
+	}
+	if len(snapshot.Turns) != 1 || snapshot.Turns[0].Narrative != "火光照亮了墙上的新线索。" {
+		t.Fatalf("unexpected turns: %+v", snapshot.Turns)
+	}
+	onStage, ok := snapshot.State["on_stage"].([]any)
+	if !ok || len(onStage) != 1 || onStage[0] != "林川" {
+		t.Fatalf("unexpected on_stage: %#v", snapshot.State["on_stage"])
+	}
+	characters := snapshot.State["characters"].(map[string]any)
+	linchuan := characters["林川"].(map[string]any)
+	if linchuan["location"] != "黄泉酒馆" {
+		t.Fatalf("unexpected character state: %#v", linchuan)
+	}
+
+	data, err := os.ReadFile(filepath.Join(store.Root(), "interactive", "story", "story-"+story.ID+".jsonl"))
+	if err != nil {
+		t.Fatalf("read story file failed: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("jsonl line count = %d, want 3\n%s", len(lines), string(data))
+	}
+	var turnLine, deltaLine map[string]any
+	if err := json.Unmarshal([]byte(lines[1]), &turnLine); err != nil {
+		t.Fatalf("parse turn line failed: %v", err)
+	}
+	if err := json.Unmarshal([]byte(lines[2]), &deltaLine); err != nil {
+		t.Fatalf("parse delta line failed: %v", err)
+	}
+	if turnLine["type"] != "turn" || deltaLine["type"] != "state_delta" {
+		t.Fatalf("unexpected event order: turn=%#v delta=%#v", turnLine["type"], deltaLine["type"])
+	}
+	if deltaLine["parent_id"] != turn.ID {
+		t.Fatalf("delta parent in file = %q, want %q", deltaLine["parent_id"], turn.ID)
 	}
 }
 

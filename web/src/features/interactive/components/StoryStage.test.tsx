@@ -21,8 +21,9 @@ describe('StoryStage', () => {
   it('uses chat messages for interactive history and streamed agent events', async () => {
     vi.mocked(sendInteractiveMessage).mockResolvedValue(streamEvents([
       { event: 'thinking', data: JSON.stringify({ content: '先判断现场风险。' }) },
-      { event: 'chunk', data: JSON.stringify({ content: '火光照亮了' }) },
-      { event: 'chunk', data: JSON.stringify({ content: '墙上的新线索。' }) },
+      { event: 'chunk', data: JSON.stringify({ content: '<NARRATIVE>火光照亮了' }) },
+      { event: 'chunk', data: JSON.stringify({ content: '墙上的新线索。</NARRATIVE><STATE' }) },
+      { event: 'chunk', data: JSON.stringify({ content: '_DELTA>{"ops":[{"op":"set","path":"on_stage","value":["林川"]}]}</STATE_DELTA>' }) },
       { event: 'done', data: '{}' },
     ]))
     const onDone = vi.fn()
@@ -60,6 +61,8 @@ describe('StoryStage', () => {
     await screen.findByText('我点燃火把')
     await screen.findByText('先判断现场风险。')
     await screen.findByText(/火光照亮了墙上的新线索。/)
+    expect(screen.queryByText(/STATE_DELTA/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/on_stage/)).not.toBeInTheDocument()
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1))
   })
 })

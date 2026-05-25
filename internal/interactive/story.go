@@ -44,6 +44,13 @@ type AppendTurnRequest struct {
 	Narrative string `json:"narrative"`
 }
 
+type AppendTurnWithStateRequest struct {
+	BranchID  string    `json:"branch_id"`
+	User      string    `json:"user"`
+	Narrative string    `json:"narrative"`
+	Ops       []StateOp `json:"ops,omitempty"`
+}
+
 type AppendStateDeltaRequest struct {
 	ParentID string    `json:"parent_id"`
 	BranchID string    `json:"branch_id"`
@@ -158,6 +165,11 @@ type Snapshot struct {
 	BranchID string         `json:"branch_id"`
 	Turns    []TurnEvent    `json:"turns"`
 	State    map[string]any `json:"state"`
+}
+
+type StoryContext struct {
+	Meta     StoryMeta `json:"meta"`
+	Snapshot Snapshot  `json:"snapshot"`
 }
 
 func (s *Store) Index() (Index, error) {
@@ -290,6 +302,21 @@ func (s *Store) DeleteStory(storyID string) error {
 	return s.writeIndexLocked(index)
 }
 
+func (s *Store) StoryContext(storyID, branchID string) (StoryContext, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	meta, lines, err := s.readStoryLocked(storyID)
+	if err != nil {
+		return StoryContext{}, err
+	}
+	snapshot, err := snapshotFromLines(storyID, branchID, meta, lines)
+	if err != nil {
+		return StoryContext{}, err
+	}
+	return StoryContext{Meta: meta, Snapshot: snapshot}, nil
+}
+
 func (s *Store) AppendTurn(storyID string, req AppendTurnRequest) (TurnEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -333,6 +360,71 @@ func (s *Store) AppendTurn(storyID string, req AppendTurnRequest) (TurnEvent, er
 		return TurnEvent{}, err
 	}
 	return event, nil
+}
+
+func (s *Store) AppendTurnWithState(storyID string, req AppendTurnWithStateRequest) (TurnEvent, *StateDeltaEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	meta, lines, err := s.readStoryLocked(storyID)
+	if err != nil {
+		return TurnEvent{}, nil, err
+	}
+	branchID := req.BranchID
+	if branchID == "" {
+		branchID = meta.CurrentBranch
+	}
+	branch, ok := meta.Branches[branchID]
+	if !ok {
+		return TurnEvent{}, nil, fmt.Errorf("分支不存在: %s", branchID)
+	}
+	parentID := any(nil)
+	if branch.Head != "" {
+		parentID = branch.Head
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	turn := TurnEvent{
+		V:         schemaVersion,
+		Type:      "turn",
+		ID:        newID("ev"),
+		ParentID:  parentID,
+		BranchID:  branchID,
+		Ts:        now,
+		User:      req.User,
+		Narrative: req.Narrative,
+		Alts:      []TurnAlt{{Narrative: req.Narrative, Ts: now}},
+		Flags:     map[string]bool{"pinned": false, "locked": false},
+	}
+	newEvents := []any{turn}
+	eventDelta := 1
+	branch.Head = turn.ID
+
+	var delta *StateDeltaEvent
+	if len(req.Ops) > 0 {
+		stateDelta := StateDeltaEvent{
+			V:        schemaVersion,
+			Type:     "state_delta",
+			ID:       newID("ev"),
+			ParentID: turn.ID,
+			BranchID: branchID,
+			Ts:       now,
+			Ops:      req.Ops,
+		}
+		newEvents = append(newEvents, stateDelta)
+		eventDelta++
+		branch.Head = stateDelta.ID
+		delta = &stateDelta
+	}
+
+	meta.Branches[branchID] = branch
+	meta.UpdatedAt = now
+	if err := s.rewriteStoryLocked(storyID, meta, lines, newEvents...); err != nil {
+		return TurnEvent{}, nil, err
+	}
+	if err := s.touchIndexLocked(storyID, now, eventDelta); err != nil {
+		return TurnEvent{}, nil, err
+	}
+	return turn, delta, nil
 }
 
 func (s *Store) AppendStateDelta(storyID string, req AppendStateDeltaRequest) (StateDeltaEvent, error) {
@@ -470,6 +562,10 @@ func (s *Store) Snapshot(storyID, branchID string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
+	return snapshotFromLines(storyID, branchID, meta, lines)
+}
+
+func snapshotFromLines(storyID, branchID string, meta StoryMeta, lines []map[string]any) (Snapshot, error) {
 	if branchID == "" {
 		branchID = meta.CurrentBranch
 	}

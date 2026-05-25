@@ -117,6 +117,10 @@ func (s *Server) handleInteractiveChat(ctx context.Context, c *app.RequestContex
 		writeError(c, consts.StatusBadRequest, "消息不能为空")
 		return
 	}
+	if strings.TrimSpace(body.StoryID) == "" {
+		writeError(c, consts.StatusBadRequest, "故事 ID 不能为空")
+		return
+	}
 	if body.Mode != "" && body.Mode != "story" {
 		writeError(c, consts.StatusBadRequest, "当前仅支持 story 子模式")
 		return

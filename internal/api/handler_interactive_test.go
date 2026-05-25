@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -116,5 +117,21 @@ func TestInteractiveStoriesAndTellersAPI(t *testing.T) {
 	decodeResponse(t, classicResp.Body.Bytes(), &classic)
 	if classic.ID != "classic" || classic.Prompt == "" {
 		t.Fatalf("classic teller mismatch: %#v", classic)
+	}
+}
+
+func TestInteractiveChatRequiresStoryID(t *testing.T) {
+	application := newTestApplication(t)
+	server := NewServer(application, "0")
+
+	resp := performJSONRequest(t, server, http.MethodPost, "/api/interactive/chat", map[string]string{
+		"mode":    "story",
+		"message": "我推开酒馆的门",
+	})
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("chat status = %d body=%s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), "故事 ID 不能为空") {
+		t.Fatalf("unexpected response body: %s", resp.Body.String())
 	}
 }
