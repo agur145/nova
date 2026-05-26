@@ -159,4 +159,62 @@ describe('InteractiveLayout', () => {
     expect(screen.getByText('阿岚')).toBeInTheDocument()
     expect(screen.getByText('发现侧巷')).toBeInTheDocument()
   })
+
+  it('keeps polling pending turn state until scene memory is ready', async () => {
+    useInteractiveStore.setState({
+      stories: [],
+      tellers: [],
+      branches: [],
+      snapshot: null,
+      currentStoryId: '',
+      currentBranchId: 'main',
+      submode: 'story',
+    })
+    let snapshotRequests = 0
+    server.use(
+      http.get('/api/interactive/stories', () => HttpResponse.json({
+        current_story_id: 'st_1',
+        stories: [{ id: 'st_1', title: '末日开端', origin: '', story_teller_id: 'classic', created_at: '', updated_at: '', branches: 1, events: 1 }],
+      })),
+      http.get('/api/interactive/stories/:id/branches', () => HttpResponse.json({
+        branches: [{ id: 'main', head: 'ev_1', title: '主线', created_at: '', current: true }],
+      })),
+      http.get('/api/interactive/stories/:id/snapshot', () => {
+        snapshotRequests += 1
+        const ready = snapshotRequests >= 2
+        return HttpResponse.json({
+          story_id: 'st_1',
+          branch_id: 'main',
+          turns: [{
+            id: 'ev_1',
+            parent_id: null,
+            branch_id: 'main',
+            ts: '',
+            user: '点燃火把',
+            narrative: '火光照亮了墙面。',
+            state_status: ready ? 'ready' : 'pending',
+            state_delta: ready ? { ops: [{ op: 'set', path: 'on_stage', value: ['林川'] }] } : undefined,
+          }],
+          current_turn: {
+            id: 'ev_1',
+            parent_id: null,
+            branch_id: 'main',
+            ts: '',
+            user: '点燃火把',
+            narrative: '火光照亮了墙面。',
+            state_status: ready ? 'ready' : 'pending',
+            state_delta: ready ? { ops: [{ op: 'set', path: 'on_stage', value: ['林川'] }] } : undefined,
+          },
+          state: ready ? { on_stage: ['林川'], characters: {}, events: [] } : { on_stage: [], characters: {}, events: [] },
+        })
+      }),
+    )
+
+    render(<InteractiveLayout />)
+
+    expect(await screen.findByText('同步中')).toBeInTheDocument()
+    expect(await screen.findByText('林川', {}, { timeout: 3000 })).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('同步中')).not.toBeInTheDocument())
+    expect(snapshotRequests).toBeGreaterThanOrEqual(2)
+  })
 })

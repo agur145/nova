@@ -68,6 +68,14 @@ export function InteractiveLayout({
     void reloadSnapshot()
   }, [reloadSnapshot])
 
+  useEffect(() => {
+    if (snapshot?.current_turn?.state_status !== 'pending') return
+    const timer = window.setInterval(() => {
+      void reloadSnapshot(snapshot.branch_id)
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [reloadSnapshot, snapshot?.branch_id, snapshot?.current_turn?.id, snapshot?.current_turn?.state_status])
+
   const handleCreateStory = async (input: { title: string; origin: string; story_teller_id: string }) => {
     const story = await createInteractiveStory(input)
     await reloadStories()

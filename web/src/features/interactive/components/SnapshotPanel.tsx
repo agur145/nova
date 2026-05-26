@@ -27,6 +27,7 @@ export function SnapshotPanel({ snapshot }: { snapshot: Snapshot | null }) {
   const time = pickString(state, ['time', 'moment', '时间'])
   const pov = pickString(state, ['pov', 'viewpoint', '视角'])
   const sceneEntries = Object.entries(scene).filter(([key]) => !SCENE_METRIC_KEYS.has(key))
+  const stateStatus = snapshot?.current_turn?.state_status
 
   return (
     <aside className="flex h-full min-w-0 flex-col border-l border-[#2f3540] bg-[#1b1e24] p-4">
@@ -35,8 +36,17 @@ export function SnapshotPanel({ snapshot }: { snapshot: Snapshot | null }) {
           <h2 className="text-sm font-semibold text-[#e0e4ec]">场景记忆</h2>
           <div className="text-[11px] text-[#7f8898]">当前回合的实时上下文</div>
         </div>
-        <Badge variant="outline" className="border-[#3a414d] bg-[#252a33] text-[#8d96a7]">{formatBranchName(snapshot?.branch_id)}</Badge>
+        <div className="flex items-center gap-1.5">
+          {stateStatus === 'pending' ? <Badge variant="outline" className="border-[#6b5b2f] bg-[#2c2618] text-[#d9bb69]">同步中</Badge> : null}
+          {stateStatus === 'failed' ? <Badge variant="outline" className="border-[#6a3535] bg-[#2c1b1b] text-[#df8d8d]">同步失败</Badge> : null}
+          <Badge variant="outline" className="border-[#3a414d] bg-[#252a33] text-[#8d96a7]">{formatBranchName(snapshot?.branch_id)}</Badge>
+        </div>
       </div>
+      {stateStatus === 'failed' && snapshot?.current_turn?.state_error ? (
+        <div className="mb-3 rounded-md border border-[#5b3434] bg-[#2a1919] px-3 py-2 text-xs text-[#e0a0a0]">
+          {snapshot.current_turn.state_error}
+        </div>
+      ) : null}
       <ScrollArea className="min-h-0 flex-1 pr-1">
         <section className="mb-3 rounded-lg border border-[#343b47] bg-[#111318] p-3">
           <div className="mb-3 flex items-center gap-2 text-xs font-semibold text-[#7fb7e8]">

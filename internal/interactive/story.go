@@ -61,6 +61,12 @@ type AppendStateDeltaRequest struct {
 	Ops      []StateOp `json:"ops"`
 }
 
+type MarkStateFailedRequest struct {
+	ParentID string `json:"parent_id"`
+	BranchID string `json:"branch_id"`
+	Error    string `json:"error"`
+}
+
 type UpdateStoryRequest struct {
 	Title         string `json:"title"`
 	StoryTellerID string `json:"story_teller_id"`
@@ -119,19 +125,21 @@ type StoryMeta struct {
 }
 
 type TurnEvent struct {
-	V          int             `json:"v"`
-	Type       string          `json:"type"`
-	ID         string          `json:"id"`
-	ParentID   any             `json:"parent_id"`
-	BranchID   string          `json:"branch_id"`
-	Ts         string          `json:"ts"`
-	User       string          `json:"user"`
-	Narrative  string          `json:"narrative"`
-	Thinking   string          `json:"thinking,omitempty"`
-	StateDelta *StateDelta     `json:"state_delta,omitempty"`
-	Alts       []TurnAlt       `json:"alts,omitempty"`
-	AltIdx     int             `json:"alt_idx,omitempty"`
-	Flags      map[string]bool `json:"flags,omitempty"`
+	V           int             `json:"v"`
+	Type        string          `json:"type"`
+	ID          string          `json:"id"`
+	ParentID    any             `json:"parent_id"`
+	BranchID    string          `json:"branch_id"`
+	Ts          string          `json:"ts"`
+	User        string          `json:"user"`
+	Narrative   string          `json:"narrative"`
+	Thinking    string          `json:"thinking,omitempty"`
+	StateDelta  *StateDelta     `json:"state_delta,omitempty"`
+	StateStatus string          `json:"state_status,omitempty"`
+	StateError  string          `json:"state_error,omitempty"`
+	Alts        []TurnAlt       `json:"alts,omitempty"`
+	AltIdx      int             `json:"alt_idx,omitempty"`
+	Flags       map[string]bool `json:"flags,omitempty"`
 }
 
 type TurnAlt struct {
@@ -428,6 +436,7 @@ func (s *Store) AppendTurnWithState(storyID string, req AppendTurnWithStateReque
 	var delta *StateDeltaEvent
 	if len(req.Ops) > 0 {
 		turn.StateDelta = &StateDelta{Ops: req.Ops}
+		turn.StateStatus = "ready"
 		stateDelta := StateDeltaEvent{
 			V:        schemaVersion,
 			Type:     "state_delta",
@@ -438,6 +447,8 @@ func (s *Store) AppendTurnWithState(storyID string, req AppendTurnWithStateReque
 			Ops:      req.Ops,
 		}
 		delta = &stateDelta
+	} else {
+		turn.StateStatus = "pending"
 	}
 
 	meta.Branches[branchID] = branch
@@ -454,6 +465,9 @@ func (s *Store) AppendTurnWithState(storyID string, req AppendTurnWithStateReque
 func (s *Store) AppendStateDelta(storyID string, req AppendStateDeltaRequest) (StateDeltaEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if len(req.Ops) == 0 {
+		return StateDeltaEvent{}, fmt.Errorf("状态变化不能为空")
+	}
 
 	meta, lines, err := s.readStoryLocked(storyID)
 	if err != nil {
@@ -500,6 +514,8 @@ func (s *Store) AppendStateDelta(storyID string, req AppendStateDeltaRequest) (S
 			ops = append(append([]StateOp(nil), turn.StateDelta.Ops...), req.Ops...)
 		}
 		raw["state_delta"] = StateDelta{Ops: ops}
+		raw["state_status"] = "ready"
+		delete(raw, "state_error")
 		updated = true
 		break
 	}
@@ -516,6 +532,52 @@ func (s *Store) AppendStateDelta(storyID string, req AppendStateDeltaRequest) (S
 		return StateDeltaEvent{}, err
 	}
 	return event, nil
+}
+
+func (s *Store) MarkStateFailed(storyID string, req MarkStateFailedRequest) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	meta, lines, err := s.readStoryLocked(storyID)
+	if err != nil {
+		return err
+	}
+	branchID := req.BranchID
+	if branchID == "" {
+		branchID = meta.CurrentBranch
+	}
+	if _, ok := meta.Branches[branchID]; !ok {
+		return fmt.Errorf("分支不存在: %s", branchID)
+	}
+	parentID := strings.TrimSpace(req.ParentID)
+	if parentID == "" {
+		return fmt.Errorf("状态失败标记缺少所属回合")
+	}
+	errText := strings.TrimSpace(req.Error)
+	if errText == "" {
+		errText = "状态生成失败"
+	}
+	updated := false
+	for _, raw := range lines {
+		id, _ := raw["id"].(string)
+		eventType, _ := raw["type"].(string)
+		if id != parentID || eventType != "turn" {
+			continue
+		}
+		raw["state_status"] = "failed"
+		raw["state_error"] = errText
+		updated = true
+		break
+	}
+	if !updated {
+		return fmt.Errorf("状态失败标记所属回合不存在: %s", parentID)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta.UpdatedAt = now
+	if err := s.rewriteStoryLocked(storyID, meta, lines); err != nil {
+		return err
+	}
+	return s.touchIndexLocked(storyID, now, 0)
 }
 
 func (s *Store) CreateBranch(storyID string, req CreateBranchRequest) (BranchSummary, error) {

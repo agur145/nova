@@ -27,16 +27,24 @@ func parseInteractiveAssistantOutput(content string) (string, []interactive.Stat
 
 	stateBlock, ok := extractBetween(content, stateDeltaStartTag, stateDeltaEndTag)
 	if !ok || strings.TrimSpace(stateBlock) == "" {
-		return strings.TrimSpace(narrative), nil, fmt.Errorf("互动状态变化不能为空：请在正文后输出非空 <STATE_DELTA> JSON")
+		return strings.TrimSpace(narrative), nil, nil
 	}
+	ops, err := parseInteractiveStateOps(stateBlock)
+	if err != nil {
+		return strings.TrimSpace(narrative), nil, nil
+	}
+	return strings.TrimSpace(narrative), ops, nil
+}
+
+func parseInteractiveStateOps(content string) ([]interactive.StateOp, error) {
 	var payload interactiveStatePayload
-	if err := json.Unmarshal([]byte(strings.TrimSpace(stateBlock)), &payload); err != nil {
-		return strings.TrimSpace(narrative), nil, fmt.Errorf("解析互动状态失败: %w", err)
+	if err := json.Unmarshal([]byte(extractJSONPayload(content)), &payload); err != nil {
+		return nil, fmt.Errorf("解析互动状态失败: %w", err)
 	}
 	if err := validateStateOps(payload.Ops); err != nil {
-		return strings.TrimSpace(narrative), nil, err
+		return nil, err
 	}
-	return strings.TrimSpace(narrative), payload.Ops, nil
+	return payload.Ops, nil
 }
 
 func extractNarrative(content string) string {
@@ -60,6 +68,17 @@ func extractBetween(content, startTag, endTag string) (string, bool) {
 		return content[start:], true
 	}
 	return content[start : start+end], true
+}
+
+func extractJSONPayload(content string) string {
+	content = strings.TrimSpace(content)
+	if strings.HasPrefix(content, "```") {
+		content = strings.TrimPrefix(content, "```json")
+		content = strings.TrimPrefix(content, "```")
+		content = strings.TrimSpace(content)
+		content = strings.TrimSuffix(content, "```")
+	}
+	return strings.TrimSpace(content)
 }
 
 func validateStateOps(ops []interactive.StateOp) error {

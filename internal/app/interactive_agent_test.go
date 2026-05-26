@@ -63,7 +63,7 @@ func TestInteractiveConversationBuildsHistoryAndPersistsAssistantToStory(t *test
 	if history[2].Role != schema.Assistant || history[2].Content != "门后传来低沉的风声。" {
 		t.Fatalf("history[2] mismatch: %#v", history[2])
 	}
-	if history[3].Role != schema.User || !strings.Contains(history[3].Content, "我点燃火把") || !strings.Contains(history[3].Content, "<NARRATIVE>") {
+	if history[3].Role != schema.User || !strings.Contains(history[3].Content, "我点燃火把") || strings.Contains(history[3].Content, "<STATE_DELTA>") {
 		t.Fatalf("history[3] mismatch: %#v", history[3])
 	}
 
@@ -143,18 +143,18 @@ func TestParseInteractiveAssistantOutput(t *testing.T) {
 	}
 
 	narrative, ops, err = parseInteractiveAssistantOutput("<NARRATIVE>只有正文。</NARRATIVE>")
-	if err == nil || narrative != "只有正文。" || len(ops) != 0 {
-		t.Fatalf("expected missing state delta error, narrative=%q ops=%#v err=%v", narrative, ops, err)
+	if err != nil || narrative != "只有正文。" || len(ops) != 0 {
+		t.Fatalf("expected missing state delta to preserve narrative, narrative=%q ops=%#v err=%v", narrative, ops, err)
 	}
 
 	narrative, ops, err = parseInteractiveAssistantOutput("旧格式正文\n<STATE_DELTA>{\"ops\":[]}</STATE_DELTA>")
-	if err == nil || narrative != "旧格式正文" || len(ops) != 0 {
-		t.Fatalf("expected empty ops error, narrative=%q ops=%#v err=%v", narrative, ops, err)
+	if err != nil || narrative != "旧格式正文" || len(ops) != 0 {
+		t.Fatalf("expected empty ops to fall back to async state, narrative=%q ops=%#v err=%v", narrative, ops, err)
 	}
 
 	narrative, ops, err = parseInteractiveAssistantOutput("旧格式正文\n<STATE_DELTA>{bad json}</STATE_DELTA>")
-	if err == nil || narrative != "旧格式正文" || len(ops) != 0 {
-		t.Fatalf("expected invalid state to preserve narrative, narrative=%q ops=%#v err=%v", narrative, ops, err)
+	if err != nil || narrative != "旧格式正文" || len(ops) != 0 {
+		t.Fatalf("expected invalid state to fall back to async state, narrative=%q ops=%#v err=%v", narrative, ops, err)
 	}
 
 	_, _, err = parseInteractiveAssistantOutput("<STATE_DELTA>{\"ops\":[]}</STATE_DELTA>")

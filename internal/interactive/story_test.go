@@ -209,6 +209,55 @@ func TestAppendTurnWithStatePersistsTurnAndDeltaAtomically(t *testing.T) {
 	}
 }
 
+func TestAppendTurnWithStateCanFinalizePendingState(t *testing.T) {
+	store := NewStore(t.TempDir())
+	story, err := store.CreateStory(CreateStoryRequest{
+		Title:         "异步状态",
+		Origin:        "主角站在门前",
+		StoryTellerID: "classic",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, delta, err := store.AppendTurnWithState(story.ID, AppendTurnWithStateRequest{
+		BranchID:  "main",
+		User:      "我推门",
+		Narrative: "门轴发出轻响。",
+	})
+	if err != nil {
+		t.Fatalf("AppendTurnWithState failed: %v", err)
+	}
+	if delta != nil {
+		t.Fatalf("pending turn should not return state delta: %#v", delta)
+	}
+	if turn.StateStatus != "pending" || turn.StateDelta != nil {
+		t.Fatalf("unexpected pending turn: %#v", turn)
+	}
+
+	_, err = store.AppendStateDelta(story.ID, AppendStateDeltaRequest{
+		ParentID: turn.ID,
+		BranchID: "main",
+		Ops: []StateOp{
+			{Op: "set", Path: "on_stage", Value: []any{"主角"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AppendStateDelta failed: %v", err)
+	}
+	snapshot, err := store.Snapshot(story.ID, "main")
+	if err != nil {
+		t.Fatalf("Snapshot failed: %v", err)
+	}
+	last := snapshot.Turns[len(snapshot.Turns)-1]
+	if last.StateStatus != "ready" || last.StateDelta == nil || len(last.StateDelta.Ops) != 1 {
+		t.Fatalf("turn should be finalized with state delta: %#v", last)
+	}
+	onStage := snapshot.State["on_stage"].([]any)
+	if len(onStage) != 1 || onStage[0] != "主角" {
+		t.Fatalf("unexpected state: %#v", snapshot.State)
+	}
+}
+
 func TestStoryGraphLinksTurnsDirectlyWhenStateDeltaIsEmbedded(t *testing.T) {
 	store := NewStore(t.TempDir())
 	story, err := store.CreateStory(CreateStoryRequest{

@@ -21,6 +21,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- WebUI：修复互动故事流式输出完成后立即刷新 snapshot 导致故事舞台从 live 消息切换为已落盘历史消息、行距格式出现抖动的问题；同一回合落盘后中间舞台继续保留流式内容，重新加载页面时才从 JSONL 恢复
+- WebUI：修复互动模式 State Agent 完成较慢时右侧场景记忆只轮询一次，导致 `state_status: pending` 一直显示“同步中”直到手动刷新的问题；现在 pending 回合会持续自动刷新到 ready/failed
 - 后端 `interactive`：增加 Agent 输出解析日志，记录原始 content、解析后的 narrative 与 state_delta ops，解析失败时同步打印错误和原始 content 便于排查状态缺失
 - 后端 `interactive`：修正 story JSONL 回合格式，普通生成回合不再写入与顶层正文重复的 `alts`，并强制 Agent 每轮在同一条 `turn` 记录中生成非空 `state_delta`；后端不再把旧状态复制成最新回合状态，右侧场景记忆按当前分支回合链应用 Agent 生成的 delta 恢复
 - 后端 `interactive`：修复剧情路线图在 `turn` 后存在隐藏 `state_delta` 事件时，后续可见节点父级指向隐藏事件导致分支节点列号回退、连线反向的问题
@@ -40,6 +42,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- 互动模式：story 子模式改为“两阶段状态生成”架构，主 Agent 只负责流式生成正文并先落盘 pending turn，后端异步 State Agent 基于用户行动、正文和当前快照生成 `state_delta.ops`，成功后补全同一条 story JSONL turn，失败时标记 `state_status: failed` 供前端提示
 - 互动模式：强化 story 子模式叙事提示，要求 Agent 以文字小说 RPG 节奏推进回合，让主角在叙事中自然与环境、物品和角色互动，并在回合结尾停留于开放的选择点或悬念点，避免生成封闭式 ending 或每个小动作都停下等待用户
 - WebUI：统一原生滚动条与 Radix ScrollArea 的深色主题样式，降低系统默认滚动条在设置弹窗、侧栏和对话区中的突兀感
 - WebUI：互动模式 Activity Bar 与 IDE 模式按钮隔离，并新增互动资料库、场景记忆左右面板 toggle；设置入口改为可调整大小的大型全局弹窗，在两种模式下均可打开，弹窗内按 IDE/互动模式分 tab 展示，公共配置在两个 tab 下保持可见

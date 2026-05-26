@@ -25,15 +25,9 @@ export function StoryStage({ storyId, branchId, snapshot, onDone }: StoryStagePr
   const [liveMessages, setLiveMessages] = useState<ChatMessage[]>([])
   const abortControllerRef = useRef<AbortController | null>(null)
   const snapshotKey = `${storyId || 'none'}:${snapshot?.branch_id || branchId || 'main'}:${snapshot?.turns?.[snapshot.turns.length - 1]?.id || 'empty'}`
+  const stageKey = `${storyId || 'none'}:${branchId || snapshot?.branch_id || 'main'}`
+  const liveStageKeyRef = useRef(stageKey)
   const previousSnapshotKeyRef = useRef(snapshotKey)
-
-  useEffect(() => {
-    if (previousSnapshotKeyRef.current === snapshotKey) return
-    if (streaming) return
-    previousSnapshotKeyRef.current = snapshotKey
-    setActivityContent('')
-    setLiveMessages([])
-  }, [snapshotKey, streaming])
 
   const latestLiveTurn = useMemo(() => {
     if (liveMessages.length === 0) return null
@@ -49,9 +43,20 @@ export function StoryStage({ storyId, branchId, snapshot, onDone }: StoryStagePr
   const duplicatePersistedLiveTurn = useMemo(() => {
     const lastTurn = snapshot?.turns?.[snapshot.turns.length - 1]
     if (!lastTurn || !latestLiveTurn) return false
+    if (liveStageKeyRef.current !== stageKey) return false
     return normalizeMessageContent(lastTurn.user) === normalizeMessageContent(latestLiveTurn.user) &&
       normalizeMessageContent(lastTurn.narrative) === normalizeMessageContent(latestLiveTurn.narrative)
-  }, [latestLiveTurn, snapshot?.turns])
+  }, [latestLiveTurn, snapshot?.turns, stageKey])
+
+  useEffect(() => {
+    if (previousSnapshotKeyRef.current === snapshotKey) return
+    if (streaming) return
+    previousSnapshotKeyRef.current = snapshotKey
+    setActivityContent('')
+    if (!duplicatePersistedLiveTurn) {
+      setLiveMessages([])
+    }
+  }, [duplicatePersistedLiveTurn, snapshotKey, streaming])
 
   const historyMessages = useMemo<ChatMessage[]>(() => {
     const turns = snapshot?.turns || []
@@ -77,6 +82,7 @@ export function StoryStage({ storyId, branchId, snapshot, onDone }: StoryStagePr
     setInput('')
     setActivityContent('正在连接 AI Agent…')
     setLiveMessages([{ role: 'user', content: message }])
+    liveStageKeyRef.current = stageKey
     setStreaming(true)
     const abortController = new AbortController()
     abortControllerRef.current = abortController

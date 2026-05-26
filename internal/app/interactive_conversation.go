@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/cloudwego/eino/schema"
@@ -26,6 +27,9 @@ type interactiveConversation struct {
 	branchID         string
 	user             string
 	replyTargetChars int
+	mu               sync.Mutex
+	lastTurn         *interactive.TurnEvent
+	lastStateReady   bool
 }
 
 func newInteractiveConversation(store *interactive.Store, novaDir, workspace, storyID, branchID, user string, replyTargetChars int) *interactiveConversation {
@@ -99,14 +103,58 @@ func (c *interactiveConversation) AppendAssistantWithThinking(content, thinking 
 		return parseErr
 	}
 	log.Printf("[interactive-agent] parse assistant output result story_id=%s branch_id=%s narrative=%q ops=%s", c.storyID, c.branchID, narrative, interactiveStateOpsLogJSON(ops))
-	_, _, err := c.store.AppendTurnWithState(c.storyID, interactive.AppendTurnWithStateRequest{
+	turn, _, err := c.store.AppendTurnWithState(c.storyID, interactive.AppendTurnWithStateRequest{
 		BranchID:  c.branchID,
 		User:      c.user,
 		Narrative: narrative,
 		Thinking:  thinking,
 		Ops:       ops,
 	})
+	if err == nil {
+		c.mu.Lock()
+		c.lastTurn = &turn
+		c.lastStateReady = len(ops) > 0
+		c.mu.Unlock()
+	}
 	return err
+}
+
+func (c *interactiveConversation) LastTurnForState() (interactive.TurnEvent, bool, bool) {
+	if c == nil {
+		return interactive.TurnEvent{}, false, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.lastTurn == nil {
+		return interactive.TurnEvent{}, false, false
+	}
+	return *c.lastTurn, c.lastStateReady, true
+}
+
+func (c *interactiveConversation) BuildStateInstruction(turn interactive.TurnEvent) (string, error) {
+	if c == nil || c.store == nil {
+		return "", fmt.Errorf("互动故事不存在")
+	}
+	storyCtx, err := c.store.StoryContext(c.storyID, c.branchID)
+	if err != nil {
+		return "", err
+	}
+	stateJSON, err := json.MarshalIndent(storyCtx.Snapshot.State, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("序列化互动状态失败: %w", err)
+	}
+	return prompts.InteractiveStateInstruction(prompts.InteractiveStatePromptInput{
+		Title:             storyCtx.Meta.Title,
+		Origin:            storyCtx.Meta.Origin,
+		StoryTellerID:     storyCtx.Meta.StoryTellerID,
+		StoryTeller:       c.tellerPrompt(storyCtx.Meta.StoryTellerID),
+		BranchID:          storyCtx.Snapshot.BranchID,
+		Characters:        c.readSettingFile("characters.md"),
+		WorldBuilding:     c.readSettingFile("world-building.md"),
+		SnapshotStateJSON: string(stateJSON),
+		UserAction:        turn.User,
+		Narrative:         turn.Narrative,
+	}), nil
 }
 
 func (c *interactiveConversation) tellerPrompt(tellerID string) string {

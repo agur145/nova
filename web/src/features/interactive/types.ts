@@ -39,6 +39,8 @@ export interface TurnEvent {
   narrative: string
   thinking?: string
   state_delta?: StateDelta
+  state_status?: 'pending' | 'ready' | 'failed'
+  state_error?: string
 }
 
 export interface StateDelta {

@@ -48,7 +48,7 @@ describe('StoryStage', () => {
         },
       ],
     }
-    const { rerender } = render(
+    const { container, rerender } = render(
       <StoryStage
         storyId="st_1"
         branchId="main"
@@ -97,6 +97,7 @@ describe('StoryStage', () => {
     )
     expect(screen.getAllByText('我点燃火把')).toHaveLength(1)
     expect(screen.getAllByText(/火光照亮了墙上的新线索。/)).toHaveLength(1)
+    expect(container.querySelector('.streaming-markdown')).toBeInTheDocument()
   })
 
   it('restores persisted thinking as a collapsed block after refresh', async () => {

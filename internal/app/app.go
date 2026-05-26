@@ -275,6 +275,9 @@ func (a *App) StartInteractiveTask(storyID, branchID, message string) *Task {
 	task := NewTask(func(ctx context.Context, task *Task, emit func(agent.Event)) {
 		log.Printf("[interactive-agent-task] run begin id=%s story_id=%s branch_id=%s message_len=%d", task.ID(), storyID, branchID, len(message))
 		chatService.Run(ctx, runner, conversation, bookService, req, emit)
+		if turn, stateReady, ok := conversation.LastTurnForState(); ok && !stateReady && ctx.Err() == nil {
+			startInteractiveStateTask(&runtimeCfg, conversation, turn)
+		}
 		log.Printf("[interactive-agent-task] run end id=%s status=%s", task.ID(), task.Status())
 	})
 
