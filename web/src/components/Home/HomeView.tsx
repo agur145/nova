@@ -9,6 +9,7 @@ import {
   createBook,
   getBookInfo,
   removeBook,
+  selectDirectory,
   switchWorkspace,
   updateBookInfo,
   type BookMeta,
@@ -24,6 +25,8 @@ interface HomeViewProps {
   onSwitch: (path: string) => void
   /** 书籍记录有变更时通知父组件刷新列表 */
   onBooksChange: () => void
+  /** 关闭全局书籍管理弹窗 */
+  onClose?: () => void
 }
 
 /** 计算相对时间描述 */
@@ -44,8 +47,8 @@ function relativeTime(isoStr: string): string {
 
 const inputCls = 'w-full rounded border border-[#3a3d44] bg-[#25262a] px-2 py-1 text-xs text-[#d7dbe2] outline-none focus:border-[#2f7dd3]'
 
-/** 主页视图：集中展示与管理书籍，作为 Home 入口的全屏页面 */
-export function HomeView({ workspace, books, onSwitch, onBooksChange }: HomeViewProps) {
+/** 书籍管理视图：集中展示、创建、打开和编辑最近书籍。 */
+export function HomeView({ workspace, books, onSwitch, onBooksChange, onClose }: HomeViewProps) {
   /** 当前 workspace 的父目录，作为新建书籍的默认存放路径 */
   const parentDir = workspace ? workspace.replace(/\/[^/]*\/?$/, '') || '/' : '/'
 
@@ -64,7 +67,6 @@ export function HomeView({ workspace, books, onSwitch, onBooksChange }: HomeView
   const [editLoading, setEditLoading] = useState(false)
   const [editSaving, setEditSaving] = useState(false)
 
-  const [openPath, setOpenPath] = useState('')
   const [opening, setOpening] = useState(false)
   const [openError, setOpenError] = useState('')
 
@@ -113,14 +115,13 @@ export function HomeView({ workspace, books, onSwitch, onBooksChange }: HomeView
 
   /** 打开自定义路径 */
   const handleOpenPath = async () => {
-    const target = openPath.trim()
-    if (!target) { setOpenError('请输入目录路径'); return }
     setOpening(true)
     setOpenError('')
     try {
-      const data = await switchWorkspace(target)
-      onSwitch(data.workspace || target)
-      setOpenPath('')
+      const selected = await selectDirectory()
+      if (selected.cancelled || !selected.path) return
+      const data = await switchWorkspace(selected.path)
+      onSwitch(data.workspace || selected.path)
     } catch (e: unknown) {
       setOpenError(e instanceof Error ? e.message : '打开失败')
     } finally {
@@ -176,8 +177,18 @@ export function HomeView({ workspace, books, onSwitch, onBooksChange }: HomeView
     <div className="flex h-full min-w-0 flex-col bg-[#1b1c1f] text-[#d7dbe2]">
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-[#303238] bg-[#202124] px-4 text-xs">
         <BookOpen className="h-3.5 w-3.5 text-[#7aa2f7]" />
-        <span className="font-medium text-[#d7dbe2]">主页</span>
-        <span className="text-[#7f8590]">书籍管理</span>
+        <span className="font-medium text-[#d7dbe2]">书籍管理</span>
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="ml-auto rounded p-1 text-[#858b96] hover:bg-[#303238] hover:text-[#d7dbe2]"
+            aria-label="关闭书籍管理"
+            title="关闭书籍管理"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
       </div>
 
       <ScrollArea className="flex-1">
@@ -360,24 +371,17 @@ export function HomeView({ workspace, books, onSwitch, onBooksChange }: HomeView
               <FolderOpen className="h-3.5 w-3.5 text-[#858b96]" />
               打开其他目录
             </div>
-            <div className="flex items-center gap-2">
-              <Input
-                type="text"
-                value={openPath}
-                onChange={(e) => setOpenPath(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') void handleOpenPath() }}
-                placeholder="输入工作区目录路径..."
-                className={inputCls + ' flex-1'}
-                disabled={opening}
-              />
+            <div className="flex items-center justify-between gap-3 rounded border border-[#303238] bg-[#1b1c1f] px-3 py-2">
+              <div className="min-w-0 text-xs text-[#8f98a8]">从系统文件夹选择器中选择已有书籍工作区。</div>
               <Button
                 type="button"
                 size="xs"
-                className="bg-[#2f7dd3] text-white hover:bg-[#3b8eea]"
+                className="shrink-0 gap-1.5 bg-[#2f7dd3] text-white hover:bg-[#3b8eea]"
                 disabled={opening}
                 onClick={handleOpenPath}
               >
-                {opening ? '打开中...' : '打开'}
+                <FolderOpen className="h-3.5 w-3.5" />
+                {opening ? '选择中...' : '选择文件夹'}
               </Button>
             </div>
             {openError && <div className="mt-2 text-xs text-red-400">{openError}</div>}

@@ -17,10 +17,9 @@
 - 开局配置
 - 互动模式支持通过 agent+skill 来初始化世界观&角色&开局
 - 优化导入酒馆v2角色卡，优化内容和世界观
-- 关键信息注入到每轮的thinking中，比如字数要求
-- prompt 高级配置
+- 目前互动模式不是分三栏吗，左侧这一栏我感觉优化空间很大，比如原来的 creator.md 我感觉可以换成 prompt 高级配置
   - 支持规则列表配置 for story teller，thinking，方便注入配置
-  - 
+  - 支持把关键信息注入到每轮的thinking中，比如字数要求
 
 ## NEED FIX
 - state agent 应该输出快一点，不要thinking了，直接输出

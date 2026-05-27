@@ -301,6 +301,11 @@ export async function switchWorkspace(path: string): Promise<{ workspace: string
   })
 }
 
+/** 打开本机系统文件夹选择器 */
+export async function selectDirectory(): Promise<{ path: string; cancelled: boolean }> {
+  return requestJSON('/api/system/select-directory')
+}
+
 /** 获取最近打开的书籍列表 */
 export async function getBooks(): Promise<BookRecord[]> {
   const data = await requestJSON<{ books: BookRecord[] }>('/api/books')

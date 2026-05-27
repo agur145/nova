@@ -30,6 +30,7 @@ export function useWorkspace() {
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [fileContent, setFileContent] = useState<string>('')
   const [workspace, setWorkspace] = useState<string>('')
+  const [workspaceLoaded, setWorkspaceLoaded] = useState(false)
   const [summary, setSummary] = useState<WorkspaceSummary | null>(null)
   const [styles, setStyles] = useState<string[]>([])
   const [books, setBooks] = useState<BookRecord[]>([])
@@ -45,6 +46,8 @@ export function useWorkspace() {
       setWorkspace(data.workspace || '')
     } catch (e) {
       console.error('获取 workspace 失败', e)
+    } finally {
+      setWorkspaceLoaded(true)
     }
   }, [])
 
@@ -246,6 +249,7 @@ export function useWorkspace() {
     selectedFile,
     fileContent,
     workspace,
+    workspaceLoaded,
     summary,
     styles,
     books,

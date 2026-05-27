@@ -21,6 +21,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- WebUI：修复互动模式切换书籍后仍保留旧书互动故事、舞台和场景记忆的问题，workspace 变化时会清空互动状态并重新加载当前书籍的故事数据
+- WebUI：修复互动模式切换剧情分支时底部剧情路线图会先清空再重建、导致整个分支面板抖动的问题；现在切换分支会保留现有路线图直到新快照返回
 - WebUI：修复互动故事流式输出完成后立即刷新 snapshot 导致故事舞台从 live 消息切换为已落盘历史消息、行距格式出现抖动的问题；同一回合落盘后中间舞台继续保留流式内容，重新加载页面时才从 JSONL 恢复
 - WebUI：修复互动模式 State Agent 完成较慢时右侧场景记忆只轮询一次，导致 `state_status: pending` 一直显示“同步中”直到手动刷新的问题；现在 pending 回合会持续自动刷新到 ready/failed
 - 后端 `interactive`：增加 Agent 输出解析日志，记录原始 content、解析后的 narrative 与 state_delta ops，解析失败时同步打印错误和原始 content 便于排查状态缺失
@@ -42,6 +44,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- WebUI：书籍管理改为和设置一致的全局弹窗入口，在 IDE 与互动模式下均可打开，不再占用编辑区 Tab
+- WebUI：移除顶部独立工作区栏，将当前书籍名合并展示到 `Nova / IDE / Interactive` 同一行，并移除重复的顶部书籍选择入口
+- WebUI：书籍管理「打开其他目录」改为调用系统文件夹选择器，不再要求用户手动输入目录路径
 - WebUI：互动模式底部剧情路线图回到自定义 SVG Git Graph 视图，移除章节列和自由缩放交互，支持滚动/拖动画布、默认定位当前节点、mini 缩略图快速跳转，并保留剧情节点选中、剧情线切换、空剧情线删除和从节点创建剧情线能力
 - 互动模式：story 子模式改为“两阶段状态生成”架构，主 Agent 只负责流式生成正文并先落盘 pending turn，后端异步 State Agent 基于用户行动、正文和当前快照生成 `state_delta.ops`，成功后补全同一条 story JSONL turn，失败时标记 `state_status: failed` 供前端提示
 - 互动模式：强化 story 子模式叙事提示，要求 Agent 以文字小说 RPG 节奏推进回合，让主角在叙事中自然与环境、物品和角色互动，并在回合结尾停留于开放的选择点或悬念点，避免生成封闭式 ending 或每个小动作都停下等待用户

@@ -16,6 +16,7 @@ interface InteractiveStore {
   setCurrentStoryId: (storyId: string) => void
   setCurrentBranchId: (branchId: string) => void
   setSubmode: (mode: InteractiveSubmode) => void
+  resetWorkspaceState: () => void
 }
 
 export const useInteractiveStore = create<InteractiveStore>((set) => ({
@@ -42,4 +43,12 @@ export const useInteractiveStore = create<InteractiveStore>((set) => ({
   setCurrentStoryId: (storyId) => set({ currentStoryId: storyId, currentBranchId: 'main', snapshot: null, branches: [] }),
   setCurrentBranchId: (branchId) => set({ currentBranchId: branchId }),
   setSubmode: (submode) => set({ submode }),
+  resetWorkspaceState: () => set({
+    stories: [],
+    tellers: [],
+    branches: [],
+    snapshot: null,
+    currentStoryId: '',
+    currentBranchId: 'main',
+  }),
 }))

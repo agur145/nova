@@ -10,7 +10,7 @@ describe('App', () => {
       const rawUrl = typeof input === 'string' ? input : input.url
       const path = new URL(rawUrl, 'http://localhost').pathname
       const payloads: Record<string, unknown> = {
-        '/api/workspace/current': { workspace: '', has_state: false },
+        '/api/workspace/current': { workspace: '/books/demo', has_state: true },
         '/api/workspace/tree': [],
         '/api/workspace/summary': { title: '', author: '', chapter_count: 0, total_words: 0, chapters: [] },
         '/api/styles': { styles: [] },
@@ -21,6 +21,8 @@ describe('App', () => {
           effective: { max_open_tabs: 5 },
           paths: { nova_dir: '', user_config: '', workspace_config: '' },
         },
+        '/api/system/select-directory': { path: '/books/from-picker', cancelled: false },
+        '/api/workspace/switch': { workspace: '/books/from-picker', message: '已切换到: /books/from-picker' },
         '/api/sessions': { sessions: [] },
         '/api/session/messages': [],
         '/api/chat/active': { active: false },
@@ -62,6 +64,46 @@ describe('App', () => {
     expect(screen.queryByLabelText('显示/隐藏任务面板')).not.toBeInTheDocument()
     expect(screen.queryByText('任务')).not.toBeInTheDocument()
     expect(screen.queryByText('写作流')).not.toBeInTheDocument()
+  })
+
+  it('opens book management as a global dialog outside editor tabs', async () => {
+    const user = userEvent.setup()
+    render(
+      <TooltipProvider>
+        <App />
+      </TooltipProvider>,
+    )
+
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith('/api/chat/active', undefined))
+    await user.click(screen.getByRole('button', { name: '书籍管理' }))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('最近书籍')).toBeInTheDocument()
+    expect(within(dialog).getByText('打开其他目录')).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: '关闭书籍管理' })).toBeInTheDocument()
+    expect(within(dialog).queryByPlaceholderText('输入工作区目录路径...')).not.toBeInTheDocument()
+  })
+
+  it('opens another book directory through the system folder picker', async () => {
+    const user = userEvent.setup()
+    render(
+      <TooltipProvider>
+        <App />
+      </TooltipProvider>,
+    )
+
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith('/api/chat/active', undefined))
+    await user.click(screen.getByRole('button', { name: '书籍管理' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: /选择文件夹/ }))
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith('/api/system/select-directory', undefined)
+      expect(globalThis.fetch).toHaveBeenCalledWith('/api/workspace/switch', expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ path: '/books/from-picker' }),
+      }))
+    })
   })
 
   it('opens settings as a global dialog outside editor tabs', async () => {

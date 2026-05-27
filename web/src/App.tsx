@@ -4,7 +4,6 @@ import { MessageList } from '@/components/Chat/MessageList'
 import { InputArea } from '@/components/Chat/InputArea'
 import { SessionManager } from '@/components/Chat/SessionManager'
 import { MarkdownEditor } from '@/components/Editor/MarkdownEditor'
-import { WorkspaceSelector } from '@/components/Header/WorkspaceSelector'
 import { GitPanel } from '@/components/Git/GitPanel'
 import { HomeView } from '@/components/Home/HomeView'
 import { SettingsView } from '@/features/settings/SettingsView'
@@ -27,7 +26,6 @@ import {
   FileText,
   GitBranch,
   FolderTree,
-  Home,
   PanelLeft,
   PanelRight,
   PenLine,
@@ -49,14 +47,11 @@ const ACTIVE_TAB_STORAGE_PREFIX = 'nova.layout.activeTab:'
 const APP_VERSION = __APP_VERSION__
 const MAX_OPEN_TABS_FALLBACK = 5
 
-/** 编辑区 Tab：承载文件或 Home（书籍管理）等页面 */
-type Tab =
-  | { kind: 'file'; path: string }
-  | { kind: 'home' }
+/** 编辑区 Tab：承载已打开文件。书籍管理使用全局弹窗，不占用编辑区 Tab。 */
+type Tab = { kind: 'file'; path: string }
 
 /** Tab 唯一标识，用于 React key 与持久化匹配 */
 function tabKey(tab: Tab): string {
-  if (tab.kind === 'home') return 'home'
   return `file:${tab.path}`
 }
 
@@ -105,12 +100,10 @@ function enforceTabLimit(tabs: Tab[], protectedKey: string | null, max: number, 
 
 /** Tab 显示标题 */
 function tabLabel(tab: Tab): string {
-  if (tab.kind === 'home') return '书籍管理'
   return tab.path.split('/').pop() || tab.path
 }
 
 function formatChapterTabLabel(tab: Tab, summary: WorkspaceSummary | null): string {
-  if (tab.kind !== 'file') return tabLabel(tab)
   return (summary?.chapters || []).find((chapter) => chapter.path === tab.path)?.display_title || tabLabel(tab)
 }
 
@@ -131,7 +124,6 @@ function readTabsFor(workspace: string): Tab[] {
     if (!Array.isArray(parsed)) return []
     const tabs = parsed.flatMap((item): Tab[] => {
       if (item && typeof item === 'object') {
-        if (item.kind === 'home') return [{ kind: 'home' }]
         if (item.kind === 'file' && typeof item.path === 'string') return [{ kind: 'file', path: item.path }]
       }
       // 兼容旧版本（仅文件路径字符串）
@@ -157,6 +149,7 @@ function App() {
   const [saveSignal, setSaveSignal] = useState(0)
   const [gitRefreshSignal, setGitRefreshSignal] = useState(0)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [bookManagerOpen, setBookManagerOpen] = useState(false)
   const [openTabs, setOpenTabs] = useState<Tab[]>([])
   const [activeTabKey, setActiveTabKey] = useState<string | null>(null)
   const [maxOpenTabs, setMaxOpenTabs] = useState<number>(MAX_OPEN_TABS_FALLBACK)
@@ -185,7 +178,7 @@ function App() {
   const aiVisible = rightPanel === 'ai'
   const versionsVisible = rightPanel === 'versions'
   const {
-    tree, loading, selectedFile, fileContent, workspace, summary, styles, books,
+    tree, loading, selectedFile, fileContent, workspace, workspaceLoaded, summary, styles, books,
     selectFile, clearSelectedFile, saveCurrentFile, createItem, deleteItem, renameItem, copyItem, moveItem,
     refresh, refreshAfterAgentFileChange, refreshAll, refreshBooks, setWorkspace,
   } = useWorkspace()
@@ -224,6 +217,10 @@ function App() {
 
   const chapterStats: Record<string, ChapterSummary> = Object.fromEntries((summary?.chapters || []).map((chapter) => [chapter.path, chapter]))
   const currentChapter = selectedFile ? chapterStats[selectedFile] : undefined
+  const currentBookName = summary?.title?.trim() ||
+    books.find((book) => book.path === workspace)?.name?.trim() ||
+    workspace.replace(/\/+$/, '').split('/').pop() ||
+    '未选择书籍'
 
   useEffect(() => {
     if (chatBootstrappedRef.current) return
@@ -269,10 +266,12 @@ function App() {
   // workspace 切换时从 localStorage 加载该 workspace 下的 tab 列表与激活项
   useEffect(() => {
     if (!workspace) {
-      // 无 workspace 时默认打开「书籍管理」页，引导用户选择或新建书籍
-      setOpenTabs([{ kind: 'home' }])
-      setActiveTabKey('home')
+      if (!workspaceLoaded) return
+      // 无 workspace 时打开全局「书籍管理」弹窗，引导用户选择或新建书籍
+      setOpenTabs([])
+      setActiveTabKey(null)
       clearSelectedFile()
+      setBookManagerOpen(true)
       return
     }
     const tabs = readTabsFor(workspace)
@@ -289,7 +288,7 @@ function App() {
     // 若激活的是文件 tab，恢复编辑器内容
     if (activeKey) {
       const target = tabs.find((t) => tabKey(t) === activeKey)
-      if (target?.kind === 'file') {
+      if (target) {
         void selectFile(target.path)
       } else {
         clearSelectedFile()
@@ -299,7 +298,7 @@ function App() {
     }
   // 仅在 workspace 变更时触发；selectFile/clearSelectedFile 引用稳定
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspace])
+  }, [workspace, workspaceLoaded])
 
   // tabs 变化时持久化到 localStorage（按 workspace 分桶）
   useEffect(() => {
@@ -336,6 +335,7 @@ function App() {
   /** workspace 切换后刷新目录树和聊天 */
   const handleWorkspaceSwitch = (newPath: string) => {
     setWorkspace(newPath)
+    setBookManagerOpen(false)
     refreshAll()
     notifyGitChange()
     void Promise.all([loadSessions(), loadHistory()]).then(() => resumeActiveChat())
@@ -356,7 +356,7 @@ function App() {
 
   const handleDeleteItem = useCallback(async (path: string) => {
     await deleteItem(path)
-    setOpenTabs((prev) => prev.filter((t) => t.kind !== 'file' || (t.path !== path && !t.path.startsWith(`${path}/`))))
+    setOpenTabs((prev) => prev.filter((t) => t.path !== path && !t.path.startsWith(`${path}/`)))
     notifyGitChange()
   }, [deleteItem, notifyGitChange])
 
@@ -366,7 +366,6 @@ function App() {
     const parent = path.replace(/\/[^/]*$/, '')
     const newPath = parent ? `${parent}/${newName}` : newName
     setOpenTabs((prev) => dedupeTabs(prev.map((t) => {
-      if (t.kind !== 'file') return t
       if (t.path === path) return { kind: 'file', path: newPath }
       if (t.path.startsWith(`${path}/`)) return { kind: 'file', path: `${newPath}${t.path.slice(path.length)}` }
       return t
@@ -382,7 +381,6 @@ function App() {
   const handleMoveItem = useCallback(async (from: string, to: string) => {
     await moveItem(from, to)
     setOpenTabs((prev) => dedupeTabs(prev.map((t) => {
-      if (t.kind !== 'file') return t
       if (t.path === from) return { kind: 'file', path: to }
       if (t.path.startsWith(`${from}/`)) return { kind: 'file', path: `${to}${t.path.slice(from.length)}` }
       return t
@@ -421,23 +419,12 @@ function App() {
     }
   }, [handleSelectFile, notifyGitChange, refresh])
 
-  /** 激活某个 tab：文件 tab 触发文件加载，Home tab 仅切换激活态 */
+  /** 激活某个文件 tab 并加载内容。 */
   const handleActivateTab = useCallback((tab: Tab) => {
     const key = tabKey(tab)
     setActiveTabKey(key)
-    if (tab.kind === 'file') {
-      if (selectedFile !== tab.path) void handleSelectFile(tab.path)
-    }
+    if (selectedFile !== tab.path) void handleSelectFile(tab.path)
   }, [handleSelectFile, selectedFile])
-
-  /** 打开 Home（书籍管理）tab：已存在则定位，否则追加并激活 */
-  const openHomeTab = useCallback(() => {
-    setOpenTabs((prev) => {
-      const next: Tab[] = prev.some((t) => t.kind === 'home') ? prev : [...prev, { kind: 'home' }]
-      return limitTabs(next, 'home')
-    })
-    setActiveTabKey('home')
-  }, [limitTabs])
 
   /** 关闭 tab；若关闭的是当前激活 tab，则切换到相邻 tab */
   const handleCloseTab = useCallback((tab: Tab) => {
@@ -479,45 +466,33 @@ function App() {
   })
 
   const topBar = (
-    <>
-      <header className="flex h-7 shrink-0 items-center border-b border-[#303238] bg-[#202124] px-2 text-xs text-[#9aa0aa]">
-        <div className="font-medium text-[#d7dbe2]">Nova</div>
-        <div className="ml-3 flex items-center gap-1">
-          <button
-            type="button"
-            className={`rounded-md px-3 py-0.5 text-xs ${mode === 'ide' ? 'bg-[#2f7dd3] text-white' : 'text-[#9aa0aa] hover:bg-[#303238]'}`}
-            onClick={() => setMode('ide')}
-          >
-            IDE
-          </button>
-          <button
-            type="button"
-            className={`rounded-md px-3 py-0.5 text-xs ${mode === 'interactive' ? 'bg-[#2f7dd3] text-white' : 'text-[#9aa0aa] hover:bg-[#303238]'}`}
-            onClick={() => setMode('interactive')}
-          >
-            Interactive
-          </button>
-        </div>
-      </header>
-
-      <WorkspaceSelector
-        workspace={workspace}
-        books={books}
-        onSwitch={handleWorkspaceSwitch}
-        onBooksChange={refreshBooks}
-      />
-    </>
+    <header className="flex h-7 shrink-0 items-center border-b border-[#303238] bg-[#202124] px-2 text-xs text-[#9aa0aa]">
+      <div className="font-medium text-[#d7dbe2]">Nova</div>
+      <div className="ml-3 flex items-center gap-1">
+        <button
+          type="button"
+          className={`rounded-md px-3 py-0.5 text-xs ${mode === 'ide' ? 'bg-[#2f7dd3] text-white' : 'text-[#9aa0aa] hover:bg-[#303238]'}`}
+          onClick={() => setMode('ide')}
+        >
+          IDE
+        </button>
+        <button
+          type="button"
+          className={`rounded-md px-3 py-0.5 text-xs ${mode === 'interactive' ? 'bg-[#2f7dd3] text-white' : 'text-[#9aa0aa] hover:bg-[#303238]'}`}
+          onClick={() => setMode('interactive')}
+        >
+          Interactive
+        </button>
+      </div>
+      <div className="ml-4 flex min-w-0 items-center gap-1.5 border-l border-[#303238] pl-3" title={workspace || currentBookName}>
+        <BookOpen className="h-3.5 w-3.5 shrink-0 text-[#7aa2f7]" />
+        <span className="truncate font-medium text-[#d7dbe2]">{currentBookName}</span>
+      </div>
+    </header>
   )
 
   const ideActivityButtons = (
     <>
-      <TooltipIconButton
-        label="主页（书籍管理）"
-        onClick={openHomeTab}
-        className={`mb-4 hover:bg-[#303238] ${activeTabKey === 'home' ? 'text-[#d7dbe2]' : 'text-[#a8adb7]'}`}
-      >
-        <Home className="h-4 w-4" />
-      </TooltipIconButton>
       <TooltipIconButton
         label="显示/隐藏项目结构"
         onClick={() => setProjectVisible((value) => !value)}
@@ -563,6 +538,13 @@ function App() {
 
   const activityBar = (
     <aside className="flex w-9 shrink-0 flex-col items-center border-r border-[#303238] bg-[#202124] py-2 text-[#7f8590]">
+      <TooltipIconButton
+        label="书籍管理"
+        onClick={() => setBookManagerOpen((open) => !open)}
+        className={`mb-4 hover:bg-[#303238] ${bookManagerOpen ? 'text-[#d7dbe2]' : 'text-[#a8adb7]'}`}
+      >
+        <BookOpen className="h-4 w-4" />
+      </TooltipIconButton>
       {mode === 'ide' ? ideActivityButtons : interactiveActivityButtons}
       <TooltipIconButton
         label="设置"
@@ -676,7 +658,6 @@ function App() {
           const key = tabKey(tab)
           const isActive = key === activeTabKey
           const label = formatChapterTabLabel(tab, summary)
-          const tooltip = tab.kind === 'file' ? tab.path : label
           return (
             <div
               key={key}
@@ -690,7 +671,7 @@ function App() {
                 type="button"
                 onClick={() => { if (!isActive) handleActivateTab(tab) }}
                 className="max-w-[220px] truncate text-left"
-                title={tooltip}
+                title={tab.path}
               >
                 {label}
               </button>
@@ -714,6 +695,7 @@ function App() {
     <main className="flex h-full min-w-0 flex-col border-r border-[#303238] bg-[#1b1c1f]">
       {mode === 'interactive' ? (
         <InteractiveLayout
+          workspace={workspace}
           leftPanelVisible={interactiveLeftVisible}
           rightPanelVisible={interactiveRightVisible}
         />
@@ -721,14 +703,7 @@ function App() {
         <>
           {tabBar}
           <div className="flex min-h-0 flex-1 flex-col">
-            {activeTab?.kind === 'home' ? (
-              <HomeView
-                workspace={workspace}
-                books={books}
-                onSwitch={handleWorkspaceSwitch}
-                onBooksChange={refreshBooks}
-              />
-            ) : activeTab?.kind === 'file' ? (
+            {activeTab ? (
               <MarkdownEditor
                 fileName={selectedFile}
                 content={fileContent}
@@ -740,7 +715,7 @@ function App() {
               />
             ) : (
               <div className="flex h-full items-center justify-center text-xs text-[#7f8590]">
-                请从左侧目录树选择文件，或打开「书籍管理」
+                请从左侧目录树选择文件，或打开「书籍管理」选择书籍
               </div>
             )}
           </div>
@@ -850,6 +825,22 @@ function App() {
           setRightPanel(null)
         }}
       />
+      <Dialog open={bookManagerOpen} onOpenChange={setBookManagerOpen}>
+        <DialogContent
+          className="left-[2vw] top-[4vh] h-[92vh] max-h-[96vh] min-h-[520px] w-[96vw] max-w-[96vw] min-w-[min(760px,96vw)] translate-x-0 translate-y-0 resize overflow-hidden border-[#303238] bg-[#1b1c1f] p-0 text-[#d7dbe2]"
+          showCloseButton={false}
+          aria-describedby={undefined}
+        >
+          <DialogTitle className="sr-only">书籍管理</DialogTitle>
+          <HomeView
+            workspace={workspace}
+            books={books}
+            onSwitch={handleWorkspaceSwitch}
+            onBooksChange={refreshBooks}
+            onClose={() => setBookManagerOpen(false)}
+          />
+        </DialogContent>
+      </Dialog>
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
         <DialogContent
           className="left-[2vw] top-[4vh] h-[92vh] max-h-[96vh] min-h-[520px] w-[96vw] max-w-[96vw] min-w-[min(760px,96vw)] translate-x-0 translate-y-0 resize overflow-hidden border-[#303238] bg-[#1b1c1f] p-0 text-[#d7dbe2]"

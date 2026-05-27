@@ -15,19 +15,22 @@ import { StoryStage } from './StoryStage'
 import { TellerPicker } from './TellerPicker'
 
 interface InteractiveLayoutProps {
+  workspace?: string
   leftPanelVisible?: boolean
   rightPanelVisible?: boolean
 }
 
 export function InteractiveLayout({
+  workspace,
   leftPanelVisible = true,
   rightPanelVisible = true,
 }: InteractiveLayoutProps) {
   const {
     stories, tellers, branches, snapshot, currentStoryId, currentBranchId, submode,
-    setStories, setTellers, setBranches, setSnapshot, setCurrentStoryId, setCurrentBranchId, setSubmode,
+    setStories, setTellers, setBranches, setSnapshot, setCurrentStoryId, setCurrentBranchId, setSubmode, resetWorkspaceState,
   } = useInteractiveStore()
   const currentStory = stories.find((story) => story.id === currentStoryId)
+  const currentBranchSnapshot = snapshot?.story_id === currentStoryId && snapshot.branch_id === currentBranchId ? snapshot : null
   const snapshotStoryIdRef = useRef('')
   const snapshotRequestSeqRef = useRef(0)
   const [timelineExpanded, setTimelineExpanded] = useState(false)
@@ -62,8 +65,14 @@ export function InteractiveLayout({
   }, [currentBranchId, currentStoryId, setBranches, setSnapshot])
 
   useEffect(() => {
+    snapshotRequestSeqRef.current += 1
+    snapshotStoryIdRef.current = ''
+    if (workspace !== undefined) {
+      resetWorkspaceState()
+      if (!workspace) return
+    }
     void Promise.all([reloadStories(), getInteractiveTellers().then(setTellers)])
-  }, [reloadStories, setTellers])
+  }, [reloadStories, resetWorkspaceState, setTellers, workspace])
 
   useEffect(() => {
     void reloadSnapshot()
@@ -99,7 +108,6 @@ export function InteractiveLayout({
     if (!storyId) return
     await switchInteractiveBranch(storyId, branchId)
     setCurrentBranchId(branchId)
-    setSnapshot(null)
     await reloadSnapshot(branchId, storyId)
   }
 
@@ -107,7 +115,6 @@ export function InteractiveLayout({
     if (!currentStoryId) return
     const branch = await createInteractiveBranch(currentStoryId, { parent_event_id: turnId, title })
     setCurrentBranchId(branch.id)
-    setSnapshot(null)
     await reloadSnapshot(branch.id)
   }
 
@@ -116,7 +123,6 @@ export function InteractiveLayout({
     await deleteInteractiveBranch(currentStoryId, branchId)
     if (branchId === currentBranchId) {
       setCurrentBranchId('main')
-      setSnapshot(null)
     }
     await reloadSnapshot(branchId === currentBranchId ? 'main' : undefined)
     await reloadStories()
@@ -200,13 +206,13 @@ export function InteractiveLayout({
                 </>
               )}
               <Panel id="story-stage" minSize="240px" className="min-w-0">
-                <StoryStage storyId={currentStoryId} branchId={currentBranchId} snapshot={snapshot} onDone={reloadSnapshot} />
+                <StoryStage storyId={currentStoryId} branchId={currentBranchId} snapshot={currentBranchSnapshot} onDone={reloadSnapshot} />
               </Panel>
               {rightPanelVisible && (
                 <>
                   <InteractiveResizeHandle direction="vertical" label="调整场景记忆宽度" />
                   <Panel id="snapshot" defaultSize="320px" minSize="180px" maxSize="45%" className="min-w-0">
-                    <SnapshotPanel snapshot={snapshot} />
+                    <SnapshotPanel snapshot={currentBranchSnapshot} />
                   </Panel>
                 </>
               )}

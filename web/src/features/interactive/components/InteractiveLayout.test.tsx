@@ -26,6 +26,67 @@ describe('InteractiveLayout', () => {
     expect(screen.queryByText('场景记忆')).not.toBeInTheDocument()
   })
 
+  it('reloads stories and snapshot when workspace changes', async () => {
+    useInteractiveStore.setState({
+      stories: [],
+      tellers: [],
+      branches: [],
+      snapshot: null,
+      currentStoryId: '',
+      currentBranchId: 'main',
+      submode: 'story',
+    })
+    let activeWorkspace = 'old'
+    server.use(
+      http.get('/api/interactive/stories', () => {
+        const isNew = activeWorkspace === 'new'
+        return HttpResponse.json({
+          current_story_id: isNew ? 'st_new' : 'st_old',
+          stories: [{
+            id: isNew ? 'st_new' : 'st_old',
+            title: isNew ? '新书故事' : '旧书故事',
+            origin: '',
+            story_teller_id: 'classic',
+            created_at: '',
+            updated_at: '',
+            branches: 1,
+            events: 1,
+          }],
+        })
+      }),
+      http.get('/api/interactive/stories/:id/branches', () => HttpResponse.json({
+        branches: [{ id: 'main', head: '', title: '主线', created_at: '', current: true }],
+      })),
+      http.get('/api/interactive/stories/:id/snapshot', ({ params }) => {
+        const isNew = params.id === 'st_new'
+        return HttpResponse.json({
+          story_id: params.id,
+          branch_id: 'main',
+          turns: [{
+            id: isNew ? 'ev_new' : 'ev_old',
+            parent_id: null,
+            branch_id: 'main',
+            ts: '',
+            user: isNew ? '新书回合' : '旧书回合',
+            narrative: isNew ? '新的场景展开。' : '旧的场景残留。',
+          }],
+          state: { on_stage: [isNew ? '新角色' : '旧角色'], characters: {}, events: [] },
+        })
+      }),
+    )
+
+    const view = render(<InteractiveLayout workspace="/books/old" />)
+
+    expect(await screen.findByText('旧书回合')).toBeInTheDocument()
+
+    activeWorkspace = 'new'
+    view.rerender(<InteractiveLayout workspace="/books/new" />)
+
+    expect(await screen.findByText('新书回合')).toBeInTheDocument()
+    expect(screen.getByText('新的场景展开。')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('旧角色')).not.toBeInTheDocument())
+  })
+
   it('loads persisted turns from current story snapshot after refresh', async () => {
     useInteractiveStore.setState({
       stories: [],
@@ -77,6 +138,8 @@ describe('InteractiveLayout', () => {
     })
     let currentBranch = 'main'
     let switchCalls = 0
+    let releaseAltSnapshot!: () => void
+    const altSnapshotReady = new Promise<void>((resolve) => { releaseAltSnapshot = resolve })
     const snapshotBranches: string[] = []
     server.use(
       http.get('/api/interactive/stories', () => HttpResponse.json({
@@ -99,7 +162,7 @@ describe('InteractiveLayout', () => {
         const branch = new URL(request.url).searchParams.get('branch') || 'main'
         snapshotBranches.push(branch)
         if (branch === 'br_alt') {
-          return HttpResponse.json({
+          return altSnapshotReady.then(() => HttpResponse.json({
             story_id: 'st_1',
             branch_id: 'br_alt',
             turns: [{
@@ -121,7 +184,7 @@ describe('InteractiveLayout', () => {
                 { id: 'br_alt', head: 'ev_alt', from: 'main', from_event: 'ev_main', title: '支线', created_at: '', current: true },
               ],
             },
-          })
+          }))
         }
         return HttpResponse.json({
           story_id: 'st_1',
@@ -157,6 +220,11 @@ describe('InteractiveLayout', () => {
     fireEvent.click(screen.getByRole('button', { name: /剧情路线图/ }))
     fireEvent.click(await screen.findByText('侧巷'))
     await waitFor(() => expect(switchCalls).toBeGreaterThan(0))
+
+    expect(screen.getAllByText('侧巷').length).toBeGreaterThan(0)
+    expect(screen.getByTestId('branch-graph-canvas')).toHaveAttribute('data-edge-count', '1')
+
+    releaseAltSnapshot()
     await waitFor(() => expect(snapshotBranches).toContain('br_alt'))
 
     await screen.findByText('走向另一条巷子')
