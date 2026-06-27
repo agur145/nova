@@ -247,6 +247,41 @@ func TestLoadStartupPortEnvOverridesConfig(t *testing.T) {
 	}
 }
 
+func TestLoadAllowLANAccessEnvOverridesConfig(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	t.Setenv("NOVA_DIR", "")
+	t.Setenv("NOVA_ALLOW_LAN_ACCESS", "true")
+
+	if err := os.WriteFile(filepath.Join(root, "config.toml"), []byte("allow_lan_access = false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Load()
+	if !cfg.AllowLANAccess {
+		t.Fatalf("NOVA_ALLOW_LAN_ACCESS should enable LAN access")
+	}
+}
+
+func TestLoadRemoteAccessCredentialsFromEnv(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	t.Setenv("NOVA_DIR", "")
+	t.Setenv("NOVA_REMOTE_ACCESS_USERNAME", " reader ")
+	t.Setenv("NOVA_REMOTE_ACCESS_PASSWORD", "secret")
+
+	cfg := Load()
+	if cfg.RemoteAccessUsername != "reader" {
+		t.Fatalf("remote access username should be trimmed from env: %q", cfg.RemoteAccessUsername)
+	}
+	if cfg.RemoteAccessPasswordHash == "" {
+		t.Fatalf("remote access password env should be hashed")
+	}
+	if !CheckRemoteAccessPassword(cfg.RemoteAccessPasswordHash, "secret") {
+		t.Fatalf("remote access password hash should verify")
+	}
+}
+
 func TestLoadAgentIdleTimeoutEnvAllowsZero(t *testing.T) {
 	t.Chdir(t.TempDir())
 	t.Setenv("NOVA_DIR", "")

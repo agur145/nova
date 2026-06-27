@@ -18,7 +18,7 @@ fi
 
 usage() {
     echo "用法: ./bootstrap.sh [all|fe|be] [options]"
-    echo "  all  - 启动前后端 (默认)"
+    echo "  all  - 启动前后端并允许局域网访问 (默认)"
     echo "  fe   - 仅启动前端 (Vite dev server)"
     echo "  be   - 仅启动后端 (Go server)"
     echo ""
@@ -132,6 +132,12 @@ case "$MODE" in
     echo "==> Nova 开发服务启动"
     echo "  前端地址: ${FRONTEND_URL}"
     echo "  后端地址: ${BACKEND_URL}"
+    LAN_ADDRESS="$(detect_lan_address)"
+    if [ -n "${LAN_ADDRESS}" ]; then
+        echo "  局域网地址: http://${LAN_ADDRESS}:${FRONTEND_PORT}"
+    else
+        echo "  局域网地址: http://<本机局域网IP>:${FRONTEND_PORT}"
+    fi
     echo ""
 
     if ! command -v pnpm >/dev/null 2>&1; then
@@ -151,6 +157,7 @@ case "$MODE" in
     echo "  按 Ctrl+C 停止服务"
     echo ""
 
+    export NOVA_ALLOW_LAN_ACCESS="${NOVA_ALLOW_LAN_ACCESS:-true}"
     exec go run ./cmd/nova --port "${BACKEND_PORT}" --dev --dev-mode --no-open
     ;;
 

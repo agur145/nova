@@ -6,8 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- DevOps：新增 Docker 部署支持，提供多阶段 `Dockerfile`、`docker-compose.yml`、`.dockerignore` 和 `.env.docker.example`，容器内使用 release 静态前端并将用户数据持久化到 `/data`。
+- Config：新增 `NOVA_REMOTE_ACCESS_USERNAME`、`NOVA_REMOTE_ACCESS_PASSWORD` 和 `NOVA_REMOTE_ACCESS_PASSWORD_HASH` 环境变量，便于容器部署时配置局域网访问登录凭据。
+
 ### Changed
 
+- Dev：`bootstrap.sh` 默认 `all` 启动现在会开启局域网访问，后端开发服务和 Vite 前端都会监听局域网地址，并在启动时打印 `http://<本机局域网IP>:5173`。
 - WebUI：设置页将原“模型”分区改名为“语言模型”，将原“图片 API”分区改名为“图像模型”，并从设置页移除后端/前端端口输入和访问地址端口展示；端口仍可通过环境变量或配置文件在启动时设置。
 
 ### Fixed

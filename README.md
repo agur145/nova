@@ -116,6 +116,41 @@ corepack enable
 - 前端：`http://localhost:5173`
 - 后端：`http://localhost:8080`
 
+### 方式三：Docker 部署
+
+需要 Docker 或 Docker Compose。先复制环境变量模板并设置远程访问账号密码：
+
+```bash
+cp .env.docker.example .env
+```
+
+编辑 `.env`，至少修改：
+
+```bash
+NOVA_REMOTE_ACCESS_USERNAME=nova
+NOVA_REMOTE_ACCESS_PASSWORD=change-this-password
+```
+
+启动：
+
+```bash
+docker compose up -d --build
+```
+
+访问：
+
+```text
+http://localhost:8080
+```
+
+同一局域网设备可访问：
+
+```text
+http://<宿主机局域网IP>:8080
+```
+
+Docker 部署使用 release 静态前端，不启动 Vite。容器内数据目录是 `/data`，默认通过 Docker volume `nova-data` 持久化；用户级配置写入 `/data/.nova`。如果要指定固定作品目录，可以在 `docker-compose.yml` 中增加 `NOVA_WORKSPACE=/data/workspace`，并把宿主机目录挂载到对应路径。
+
 ## 模型与配置
 
 Nova 使用 OpenAI 兼容接口，可通过环境变量快速配置：
@@ -138,6 +173,9 @@ export NOVA_SKILLS_DIR="./skills"
 export NOVA_WEB_DIR="./web"
 export NOVA_BACKEND_PORT="8080"
 export NOVA_FRONTEND_PORT="5173"
+export NOVA_ALLOW_LAN_ACCESS="true"
+export NOVA_REMOTE_ACCESS_USERNAME="nova"
+export NOVA_REMOTE_ACCESS_PASSWORD="your-remote-password"
 ```
 
 也可以在UI设置页（对应 `config.toml`）中配置语言模型、图像模型、Agent 参数、默认写作 Skill（`writing_skill_default`，默认 `novel-lite`）、编辑器、互动模式、版本管理和界面外观（语言、主题、字体）。图像生成首版接入 OpenAI 标准 Images API，支持多个 `image_api_profiles`，生成结果会保存到当前工作区 `assets/image/generated/`。`theme` 支持 `dark`（默认）、`light` 和 `system`，可保存到用户级或工作区级配置。`NOVA_SKILLS_DIR` / `skills_dir` 用于内置只读 Skills；自定义 Skills 可通过界面写入 `<nova_dir>/skills` 或 `<workspace>/.nova/skills`。需要修改内置预制 Skill 时，不编辑内置目录，默认在 `<nova_dir>/skills/<skill-name>/SKILL.md` 创建同名用户级覆盖；只有用户级目录不可写时才退回工作区覆盖。Skills 页也可修改 Skill 名称和保存位置，或删除覆盖版本以恢复内置版本。创作 Agent 不会把预设 SKILL.md 直接注入模型上下文，只会在本轮动态提示中说明当前选择的 Writing Skill；当模型判断本轮涉及正文写作/续写时，应通过 `skill` 工具自行加载对应 Skill。写作范围始终从用户指令判断，不使用单独的 `writing_scope` 字段。配置优先级：

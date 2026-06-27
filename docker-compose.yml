@@ -1,0 +1,29 @@
+services:
+  nova:
+    build:
+      context: .
+      args:
+        NOVA_VERSION: ${NOVA_VERSION:-docker}
+    image: nova:local
+    restart: unless-stopped
+    ports:
+      - "${NOVA_HOST_PORT:-8080}:8080"
+    environment:
+      NOVA_BACKEND_PORT: "8080"
+      NOVA_DIR: /data/.nova
+      NOVA_SKILLS_DIR: /app/skills
+      NOVA_WEB_DIR: /app/web
+      NOVA_ALLOW_LAN_ACCESS: "true"
+      NOVA_REMOTE_ACCESS_USERNAME: ${NOVA_REMOTE_ACCESS_USERNAME:?set NOVA_REMOTE_ACCESS_USERNAME in .env}
+      NOVA_REMOTE_ACCESS_PASSWORD: ${NOVA_REMOTE_ACCESS_PASSWORD:?set NOVA_REMOTE_ACCESS_PASSWORD in .env}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      OPENAI_IMAGE_API_KEY: ${OPENAI_IMAGE_API_KEY:-}
+      OPENAI_IMAGE_BASE_URL: ${OPENAI_IMAGE_BASE_URL:-}
+      OPENAI_IMAGE_MODEL: ${OPENAI_IMAGE_MODEL:-}
+    volumes:
+      - nova-data:/data
+
+volumes:
+  nova-data:

@@ -18,5 +18,6 @@ docs/
 .worktrees/
 .pnpm-store/
 .DS_Store
+.env
 .nova
 prd

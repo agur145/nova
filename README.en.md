@@ -116,6 +116,41 @@ Default addresses:
 - Frontend: `http://localhost:5173`
 - Backend: `http://localhost:8080`
 
+### Option 3: Docker Deployment
+
+Requires Docker or Docker Compose. Copy the environment template first and set the remote access credentials:
+
+```bash
+cp .env.docker.example .env
+```
+
+Edit `.env` and at least change:
+
+```bash
+NOVA_REMOTE_ACCESS_USERNAME=nova
+NOVA_REMOTE_ACCESS_PASSWORD=change-this-password
+```
+
+Start Nova:
+
+```bash
+docker compose up -d --build
+```
+
+Open:
+
+```text
+http://localhost:8080
+```
+
+Devices on the same LAN can open:
+
+```text
+http://<host-LAN-IP>:8080
+```
+
+Docker deployment uses the release static frontend and does not start Vite. The container data directory is `/data`, persisted by the Docker volume `nova-data` by default; user-level settings are written to `/data/.nova`. To pin a specific book workspace, add `NOVA_WORKSPACE=/data/workspace` in `docker-compose.yml` and mount the host directory to that path.
+
 ## Models and Configuration
 
 Nova uses an OpenAI-compatible API. You can configure it quickly with environment variables:
@@ -138,6 +173,9 @@ export NOVA_SKILLS_DIR="./skills"
 export NOVA_WEB_DIR="./web"
 export NOVA_BACKEND_PORT="8080"
 export NOVA_FRONTEND_PORT="5173"
+export NOVA_ALLOW_LAN_ACCESS="true"
+export NOVA_REMOTE_ACCESS_USERNAME="nova"
+export NOVA_REMOTE_ACCESS_PASSWORD="your-remote-password"
 ```
 
 You can also configure language models, image models, Agent parameters, the default Writing Skill (`writing_skill_default`, default `novel-lite`), editor options, interactive-mode behavior, version management, and interface appearance (language, theme, fonts) from the UI settings page, which maps to `config.toml`. Image generation initially uses the standard OpenAI Images API, supports multiple `image_api_profiles`, and saves generated files to the current workspace under `assets/image/generated/`. `theme` supports `dark` (default), `light`, and `system`, and can be saved at the user or workspace level. `NOVA_SKILLS_DIR` / `skills_dir` is the built-in read-only Skills root; custom Skills can be written from the UI to `<nova_dir>/skills` or `<workspace>/.nova/skills`. To customize a built-in preset Skill, do not edit the built-in directory; Nova creates a same-name user-level override at `<nova_dir>/skills/<skill-name>/SKILL.md` by default, falling back to a workspace override only when the user-level directory is not writable. The Skills page can also rename a Skill, move it between user/workspace storage, or delete an override to restore the built-in version. The Writing Agent no longer injects preset SKILL.md directly into model context; it only adds a dynamic turn hint naming the selected Writing Skill, and the model should call the `skill` tool to load that Skill when it decides the turn involves prose writing or continuation. The actual writing range always comes from the user's instruction and does not use a separate `writing_scope` field. Configuration precedence:
