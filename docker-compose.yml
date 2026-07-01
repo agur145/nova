@@ -1,21 +1,21 @@
 services:
-  nova:
+  denova:
     build:
       context: .
       args:
-        NOVA_VERSION: ${NOVA_VERSION:-docker}
-    image: nova:local
+        DENOVA_VERSION: ${DENOVA_VERSION:-docker}
+    image: denova:local
     restart: unless-stopped
     ports:
-      - "${NOVA_HOST_PORT:-8080}:8080"
+      - "${DENOVA_HOST_PORT:-8080}:8080"
     environment:
-      NOVA_BACKEND_PORT: "8080"
-      NOVA_DIR: /data/.nova
-      NOVA_SKILLS_DIR: /app/skills
-      NOVA_WEB_DIR: /app/web
-      NOVA_ALLOW_LAN_ACCESS: "true"
-      NOVA_REMOTE_ACCESS_USERNAME: ${NOVA_REMOTE_ACCESS_USERNAME:?set NOVA_REMOTE_ACCESS_USERNAME in .env}
-      NOVA_REMOTE_ACCESS_PASSWORD: ${NOVA_REMOTE_ACCESS_PASSWORD:?set NOVA_REMOTE_ACCESS_PASSWORD in .env}
+      DENOVA_BACKEND_PORT: "8080"
+      DENOVA_DIR: /data/.denova
+      DENOVA_SKILLS_DIR: /app/skills
+      DENOVA_WEB_DIR: /app/web
+      DENOVA_ALLOW_LAN_ACCESS: "true"
+      DENOVA_REMOTE_ACCESS_USERNAME: ${DENOVA_REMOTE_ACCESS_USERNAME:?set DENOVA_REMOTE_ACCESS_USERNAME in .env}
+      DENOVA_REMOTE_ACCESS_PASSWORD: ${DENOVA_REMOTE_ACCESS_PASSWORD:?set DENOVA_REMOTE_ACCESS_PASSWORD in .env}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-}
@@ -23,7 +23,7 @@ services:
       OPENAI_IMAGE_BASE_URL: ${OPENAI_IMAGE_BASE_URL:-}
       OPENAI_IMAGE_MODEL: ${OPENAI_IMAGE_MODEL:-}
     volumes:
-      - nova-data:/data
+      - denova-data:/data
 
 volumes:
-  nova-data:
+  denova-data:

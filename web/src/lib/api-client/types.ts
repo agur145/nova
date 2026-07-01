@@ -1,13 +1,21 @@
 export interface ChatMessage {
   type?: 'message' | 'clear'
-  role?: 'user' | 'assistant' | 'thinking' | 'tool_call' | 'tool_result' | 'context_compaction' | 'token_usage' | 'system' | 'error'
+  role?: 'user' | 'assistant' | 'thinking' | 'tool_call' | 'tool_result' | 'context_compaction' | 'token_usage' | 'plan_question' | 'proposed_plan' | 'system' | 'error'
   content?: string
   id?: string
+  render_key?: string
+  streaming_target_content?: string
   turn_id?: string
+  navigation_turn_id?: string
   name?: string
   args?: string
   status?: 'running' | 'success' | 'error'
   result?: string
+  illustration?: ChapterIllustration
+  interactive_image?: InteractiveImage
+  interactive_images?: InteractiveImage[]
+  interactive_image_error?: InteractiveImageError
+  interactive_image_status?: 'running' | 'success' | 'error'
   phase?: string
   attempt?: number
   tokens_before?: number
@@ -28,6 +36,10 @@ export interface ChatMessage {
   subagent?: boolean
   subagent_session_id?: string
   subagent_type?: string
+  sse_hidden_fields?: string[]
+  sse_hidden_reason?: string
+  sse_display_notice?: string
+  sse_generated_chars?: number
   prompt_tokens?: number
   cached_prompt_tokens?: number
   uncached_prompt_tokens?: number
@@ -39,9 +51,59 @@ export interface ChatMessage {
   generated_bytes?: number
   usage_calls?: TokenUsageCall[]
   streaming?: boolean
+  thinking_preview?: string
+  plan_action?: 'answered' | 'approved' | 'continue' | 'exited'
   created_at?: string
   turn_versions?: { turn_id: string; ts: string; current?: boolean }[]
   turn_version_index?: number
+}
+
+export interface ChapterIllustration {
+  schema: 'chapter_illustration.v1' | string
+  chapter_path: string
+  image_path: string
+  meta_path: string
+  markdown: string
+  alt_text: string
+  profile_id: string
+  provider: string
+  model: string
+  size?: string
+  quality?: string
+  output_format?: string
+  created_at?: string
+  revised_prompt?: string
+  mime_type?: string
+  size_bytes?: number
+}
+
+export interface InteractiveImage {
+  schema: 'interactive_image.v1' | string
+  story_id: string
+  branch_id: string
+  turn_id: string
+  image_path: string
+  meta_path: string
+  alt_text?: string
+  profile_id?: string
+  provider?: string
+  model?: string
+  size?: string
+  quality?: string
+  output_format?: string
+  created_at?: string
+  revised_prompt?: string
+  mime_type?: string
+  size_bytes?: number
+}
+
+export interface InteractiveImageError {
+  schema: 'interactive_image_error.v1' | string
+  story_id?: string
+  branch_id?: string
+  turn_id?: string
+  message?: string
+  created_at?: string
 }
 
 export interface TokenUsageCall {
@@ -173,7 +235,28 @@ export interface BookRecord {
   name: string
   path: string
   author: string
+  cover_updated_at?: string
   last_opened_at: string
+}
+
+export interface BookCoverResult {
+  schema: 'book_cover.v1' | string
+  cover_path: string
+  source_path: string
+  meta_path: string
+  backup_path?: string
+  cover_updated_at: string
+  image_preset_id?: string
+  profile_id: string
+  provider: string
+  model: string
+  size?: string
+  quality?: string
+  output_format?: string
+  created_at?: string
+  revised_prompt?: string
+  mime_type?: string
+  size_bytes?: number
 }
 
 export interface ChapterSummary {
@@ -334,6 +417,38 @@ export interface VersionCommandResult {
   status?: VersionStatus
 }
 
+export type VersionRestoreScope = 'workspace' | 'paths'
+
+export interface VersionRestoreChange {
+  path: string
+  status: 'added' | 'modified' | 'deleted'
+  text: boolean
+  binary: boolean
+  missing_in_version?: boolean
+  missing_in_workspace?: boolean
+}
+
+export interface VersionRestorePlan {
+  target: VersionEntry
+  scope: VersionRestoreScope
+  paths: string[]
+  changes: VersionRestoreChange[]
+  will_create_backup: boolean
+  current_dirty: boolean
+  backup_message?: string
+  warnings?: string[]
+}
+
+export interface VersionRestoreResult {
+  message: string
+  target: VersionEntry
+  version?: VersionEntry
+  backup_version?: VersionEntry
+  restored_paths: string[]
+  scope: VersionRestoreScope
+  status?: VersionStatus
+}
+
 export interface VersionDiff {
   version: VersionEntry
   changes: VersionChange[]
@@ -359,6 +474,45 @@ export interface LoreItem {
   content: string
   created_at: string
   updated_at: string
+  image?: LoreItemImage
+}
+
+export interface LoreItemImage {
+  schema: 'lore_item_image.v1' | string
+  image_path: string
+  meta_path: string
+  alt_text?: string
+  image_preset_id?: string
+  profile_id?: string
+  provider?: string
+  model?: string
+  size?: string
+  quality?: string
+  output_format?: string
+  created_at?: string
+  revised_prompt?: string
+  mime_type?: string
+  size_bytes?: number
+}
+
+export interface LoreItemImageGenerateRequest {
+  instruction?: string
+  image_preset_id?: string
+  profile_id?: string
+}
+
+export interface LoreImagesGenerateRequest extends LoreItemImageGenerateRequest {
+  item_ids: string[]
+  overwrite_existing?: boolean
+}
+
+export interface LoreImageProgressEvent {
+  item_id: string
+  index: number
+  total: number
+  status: 'running' | 'skipped' | 'success' | 'error'
+  message?: string
+  item?: LoreItem
 }
 
 export type SkillScope = 'builtin' | 'user' | 'workspace'

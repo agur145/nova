@@ -6,20 +6,26 @@ import (
 	"testing"
 )
 
-func TestLoadDefaultsNovaDirToHomeNova(t *testing.T) {
+func TestLoadDefaultsDenovaDir(t *testing.T) {
 	t.Chdir(t.TempDir())
+	t.Setenv("DENOVA_DIR", "")
 	t.Setenv("NOVA_DIR", "")
 
 	cfg := Load()
-	want := normalizePath("./.nova")
+	want := normalizePath("./.denova")
 	if cfg.NovaDir != want {
 		t.Fatalf("默认 NovaDir 不符合预期: want=%s got=%s", want, cfg.NovaDir)
+	}
+	if cfg.DenovaDir != want {
+		t.Fatalf("默认 DenovaDir 不符合预期: want=%s got=%s", want, cfg.DenovaDir)
 	}
 }
 
 func TestLoadDoesNotDefaultWorkspaceToCurrentDir(t *testing.T) {
 	t.Chdir(t.TempDir())
+	t.Setenv("DENOVA_DIR", "")
 	t.Setenv("NOVA_DIR", "")
+	t.Setenv("DENOVA_WORKSPACE", "")
 	t.Setenv("NOVA_WORKSPACE", "")
 
 	cfg := Load()
@@ -34,11 +40,31 @@ func TestLoadDoesNotDefaultWorkspaceToCurrentDir(t *testing.T) {
 func TestLoadNovaDirFromEnv(t *testing.T) {
 	t.Chdir(t.TempDir())
 	dir := filepath.Join(t.TempDir(), "nova-data")
+	t.Setenv("DENOVA_DIR", "")
 	t.Setenv("NOVA_DIR", dir)
 
 	cfg := Load()
 	if cfg.NovaDir != dir {
 		t.Fatalf("环境变量 NovaDir 不符合预期: want=%s got=%s", dir, cfg.NovaDir)
+	}
+	if cfg.DenovaDir != dir {
+		t.Fatalf("环境变量 DenovaDir 不符合预期: want=%s got=%s", dir, cfg.DenovaDir)
+	}
+}
+
+func TestLoadDenovaDirEnvOverridesLegacyNovaDir(t *testing.T) {
+	t.Chdir(t.TempDir())
+	denovaDir := filepath.Join(t.TempDir(), "denova-data")
+	legacyDir := filepath.Join(t.TempDir(), "nova-data")
+	t.Setenv("DENOVA_DIR", denovaDir)
+	t.Setenv("NOVA_DIR", legacyDir)
+
+	cfg := Load()
+	if cfg.DenovaDir != denovaDir {
+		t.Fatalf("DENOVA_DIR should override NOVA_DIR: want=%s got=%s", denovaDir, cfg.DenovaDir)
+	}
+	if cfg.NovaDir != denovaDir {
+		t.Fatalf("legacy NovaDir should mirror DENOVA_DIR: want=%s got=%s", denovaDir, cfg.NovaDir)
 	}
 }
 
@@ -70,11 +96,11 @@ func TestLoadWithWorkspaceMergesLayers(t *testing.T) {
 	t.Setenv("OPENAI_MODEL", "")
 
 	if err := WriteSettingsFile(filepath.Join(novaDir, "config.toml"),
-		Settings{OpenAIModel: "user-model", Language: "zh-CN", WritingSkillDefault: "novel-lite"}); err != nil {
+		Settings{OpenAIModel: "user-model", Language: "zh-CN", WritingSkillDefault: "novel-lite", IDEImagePresetID: "realistic"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := WriteSettingsFile(filepath.Join(ws, ".nova", "config.toml"),
-		Settings{OpenAIModel: "ws-model", Language: "en-US", WritingSkillDefault: "novel-heavy"}); err != nil {
+		Settings{OpenAIModel: "ws-model", Language: "en-US", WritingSkillDefault: "novel-heavy", IDEImagePresetID: "2d-illustration"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -90,6 +116,9 @@ func TestLoadWithWorkspaceMergesLayers(t *testing.T) {
 	}
 	if cfg.WritingSkillDefault != "novel-heavy" {
 		t.Fatalf("workspace writing skill default expected, got %s", cfg.WritingSkillDefault)
+	}
+	if cfg.IDEImagePresetID != "2d-illustration" {
+		t.Fatalf("workspace image preset default expected, got %s", cfg.IDEImagePresetID)
 	}
 	if layered.User.OpenAIModel != "user-model" {
 		t.Fatalf("user layer raw value lost")
@@ -118,6 +147,70 @@ func TestLoadWithWorkspaceAllowsUnlimitedAgentIdleTimeout(t *testing.T) {
 	}
 	if layered.Effective.AgentIdleTimeoutSeconds == nil || *layered.Effective.AgentIdleTimeoutSeconds != 0 {
 		t.Fatalf("effective agent idle timeout should preserve explicit 0")
+	}
+}
+
+func TestLoadWithWorkspaceAllowsUnlimitedAgentToolResultLimit(t *testing.T) {
+	novaDir := t.TempDir()
+	ws := t.TempDir()
+	t.Setenv("NOVA_DIR", novaDir)
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI_MODEL", "")
+
+	if err := WriteSettingsFile(filepath.Join(novaDir, "config.toml"),
+		Settings{AgentToolResultLimitKB: intPtr(0)}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, layered, err := LoadWithWorkspace(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AgentToolResultLimitKB != 0 {
+		t.Fatalf("agent tool result limit should allow explicit 0, got %d", cfg.AgentToolResultLimitKB)
+	}
+	if layered.Effective.AgentToolResultLimitKB == nil || *layered.Effective.AgentToolResultLimitKB != 0 {
+		t.Fatalf("effective agent tool result limit should preserve explicit 0")
+	}
+}
+
+func TestLoadWithWorkspaceDefaultsLLMInputLogDisabled(t *testing.T) {
+	novaDir := t.TempDir()
+	ws := t.TempDir()
+	t.Setenv("NOVA_DIR", novaDir)
+
+	cfg, layered, err := LoadWithWorkspace(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLMInputLogEnabled {
+		t.Fatalf("llm input log should default to disabled")
+	}
+	if layered.Effective.LLMInputLogEnabled == nil || *layered.Effective.LLMInputLogEnabled {
+		t.Fatalf("effective llm input log should default to false: %#v", layered.Effective.LLMInputLogEnabled)
+	}
+}
+
+func TestLoadWithWorkspaceReadsUserLLMInputLogSetting(t *testing.T) {
+	novaDir := t.TempDir()
+	ws := t.TempDir()
+	t.Setenv("NOVA_DIR", novaDir)
+	enabled := true
+
+	if err := WriteSettingsFile(filepath.Join(novaDir, "config.toml"),
+		Settings{LLMInputLogEnabled: &enabled}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, layered, err := LoadWithWorkspace(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.LLMInputLogEnabled {
+		t.Fatalf("llm input log should read user setting")
+	}
+	if layered.Effective.LLMInputLogEnabled == nil || !*layered.Effective.LLMInputLogEnabled {
+		t.Fatalf("effective llm input log should be true")
 	}
 }
 
@@ -198,6 +291,30 @@ func TestLoadWithWorkspaceAllowsGlobalUnlimitedAgentIdleTimeout(t *testing.T) {
 	}
 }
 
+func TestLoadWithWorkspaceAllowsGlobalUnlimitedAgentToolResultLimit(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	ws := t.TempDir()
+	t.Setenv("NOVA_DIR", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI_MODEL", "")
+
+	if err := os.WriteFile(filepath.Join(root, "config.toml"), []byte("agent_tool_result_limit_kb = 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, layered, err := LoadWithWorkspace(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AgentToolResultLimitKB != 0 {
+		t.Fatalf("global agent tool result limit should allow explicit 0, got %d", cfg.AgentToolResultLimitKB)
+	}
+	if layered.Global.AgentToolResultLimitKB == nil || *layered.Global.AgentToolResultLimitKB != 0 {
+		t.Fatalf("global layer should preserve explicit 0")
+	}
+}
+
 func TestLoadWithWorkspaceUsesConfiguredStartupPorts(t *testing.T) {
 	root := t.TempDir()
 	t.Chdir(root)
@@ -251,7 +368,8 @@ func TestLoadAllowLANAccessEnvOverridesConfig(t *testing.T) {
 	root := t.TempDir()
 	t.Chdir(root)
 	t.Setenv("NOVA_DIR", "")
-	t.Setenv("NOVA_ALLOW_LAN_ACCESS", "true")
+	t.Setenv("DENOVA_ALLOW_LAN_ACCESS", "true")
+	t.Setenv("NOVA_ALLOW_LAN_ACCESS", "false")
 
 	if err := os.WriteFile(filepath.Join(root, "config.toml"), []byte("allow_lan_access = false\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -259,7 +377,7 @@ func TestLoadAllowLANAccessEnvOverridesConfig(t *testing.T) {
 
 	cfg := Load()
 	if !cfg.AllowLANAccess {
-		t.Fatalf("NOVA_ALLOW_LAN_ACCESS should enable LAN access")
+		t.Fatalf("DENOVA_ALLOW_LAN_ACCESS should enable LAN access")
 	}
 }
 
@@ -267,8 +385,10 @@ func TestLoadRemoteAccessCredentialsFromEnv(t *testing.T) {
 	root := t.TempDir()
 	t.Chdir(root)
 	t.Setenv("NOVA_DIR", "")
-	t.Setenv("NOVA_REMOTE_ACCESS_USERNAME", " reader ")
-	t.Setenv("NOVA_REMOTE_ACCESS_PASSWORD", "secret")
+	t.Setenv("DENOVA_REMOTE_ACCESS_USERNAME", " reader ")
+	t.Setenv("NOVA_REMOTE_ACCESS_USERNAME", "legacy")
+	t.Setenv("DENOVA_REMOTE_ACCESS_PASSWORD", "secret")
+	t.Setenv("NOVA_REMOTE_ACCESS_PASSWORD", "legacy-secret")
 
 	cfg := Load()
 	if cfg.RemoteAccessUsername != "reader" {
@@ -279,6 +399,24 @@ func TestLoadRemoteAccessCredentialsFromEnv(t *testing.T) {
 	}
 	if !CheckRemoteAccessPassword(cfg.RemoteAccessPasswordHash, "secret") {
 		t.Fatalf("remote access password hash should verify")
+	}
+}
+
+func TestLoadStartupDenovaPortEnvOverridesLegacy(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	t.Setenv("NOVA_DIR", "")
+	t.Setenv("DENOVA_BACKEND_PORT", "19090")
+	t.Setenv("NOVA_BACKEND_PORT", "18080")
+	t.Setenv("DENOVA_FRONTEND_PORT", "16173")
+	t.Setenv("NOVA_FRONTEND_PORT", "15173")
+
+	cfg := Load()
+	if cfg.BackendPort != 19090 {
+		t.Fatalf("DENOVA_BACKEND_PORT should override NOVA_BACKEND_PORT: %d", cfg.BackendPort)
+	}
+	if cfg.FrontendPort != 16173 {
+		t.Fatalf("DENOVA_FRONTEND_PORT should override NOVA_FRONTEND_PORT: %d", cfg.FrontendPort)
 	}
 }
 

@@ -7,9 +7,9 @@ import (
 	"log"
 	"strings"
 
-	"nova/config"
-	"nova/internal/agent"
-	"nova/internal/session"
+	"denova/config"
+	"denova/internal/agent"
+	"denova/internal/session"
 )
 
 type ConfigManagerAppService struct {
@@ -81,6 +81,7 @@ func (s *ConfigManagerAppService) StartTask(req ConfigManagerRequest) *Task {
 			Workspace:           workspace,
 			Mode:                "config_manager",
 			IdleTimeout:         agentIdleTimeout(runtimeCfg),
+			ToolResultMaxBytes:  agentToolResultMaxBytes(runtimeCfg),
 			SystemPromptLog:     agent.BuildConfigManagerInstructionComposition(&runtimeCfg, state, resourceSkills...),
 			OnMutationsVerified: a.automationMutationCallback("config_manager_post_run"),
 		}, emit)

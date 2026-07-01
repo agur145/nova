@@ -9,10 +9,21 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"denova/internal/workspacepath"
 )
 
+// WorkspaceFileSet defines which workspace files are visible to versioning.
+type WorkspaceFileSet struct {
+	root string
+}
+
 func (s *Service) collectVisibleFiles() ([]versionFileData, error) {
-	return collectVersionFiles(s.workspace, s.workspace)
+	return WorkspaceFileSet{root: s.workspace}.Collect()
+}
+
+func (w WorkspaceFileSet) Collect() ([]versionFileData, error) {
+	return collectVersionFiles(w.root, w.root)
 }
 
 func collectVersionFiles(root, base string) ([]versionFileData, error) {
@@ -97,8 +108,19 @@ func isTextBytes(data []byte) bool {
 func isVersionExcludedRelPath(relPath string) bool {
 	cleanRel := filepath.ToSlash(filepath.Clean(filepath.FromSlash(relPath)))
 	return cleanRel == ".git" || strings.HasPrefix(cleanRel, ".git/") ||
-		cleanRel == ".nova/runs" || strings.HasPrefix(cleanRel, ".nova/runs/") ||
-		cleanRel == ".nova/interactive" || strings.HasPrefix(cleanRel, ".nova/interactive/")
+		cleanRel == workspacepath.CurrentRel("runs") || strings.HasPrefix(cleanRel, workspacepath.CurrentRel("runs")+"/") ||
+		cleanRel == workspacepath.LegacyRel("runs") || strings.HasPrefix(cleanRel, workspacepath.LegacyRel("runs")+"/") ||
+		cleanRel == workspacepath.CurrentRel("interactive") || strings.HasPrefix(cleanRel, workspacepath.CurrentRel("interactive")+"/") ||
+		cleanRel == workspacepath.LegacyRel("interactive") || strings.HasPrefix(cleanRel, workspacepath.LegacyRel("interactive")+"/")
+}
+
+func versionProtectedExcludedDirs() []string {
+	return []string{
+		workspacepath.CurrentRel("runs"),
+		workspacepath.LegacyRel("runs"),
+		workspacepath.CurrentRel("interactive"),
+		workspacepath.LegacyRel("interactive"),
+	}
 }
 
 func safeVisiblePath(workspace, relPath string) (string, error) {

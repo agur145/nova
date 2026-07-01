@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"nova/internal/book"
-	"nova/internal/prompts"
+	"denova/internal/book"
+	"denova/internal/prompts"
+	"denova/internal/workspacepath"
 )
 
 const maxStyleRuleContextChars = 32000
@@ -95,7 +96,7 @@ func appendLoreReferenceContext(bookService *book.Service, message string, refer
 		sb.WriteString("\n资料库读取失败：")
 		sb.WriteString(err.Error())
 		sb.WriteString("\n")
-		addContextLog(logs, "资料库引用", ".nova/lore/items.json", err.Error(), "读取失败")
+		addContextLog(logs, "资料库引用", workspacepath.Rel(bookService.Workspace(), "lore", "items.json"), err.Error(), "读取失败")
 		return sb.String()
 	}
 
@@ -171,6 +172,17 @@ func boundedStyleRules(rules []StyleRule, maxChars int) []StyleRule {
 		}
 	}
 	return result
+}
+
+func truncateRunes(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit])
 }
 
 // appendSelectionContext 将用户在编辑器中选中的文本片段追加到消息上下文。

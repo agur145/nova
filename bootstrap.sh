@@ -2,11 +2,11 @@
 set -e
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BACKEND_PORT="${NOVA_BACKEND_PORT:-8080}"
-FRONTEND_PORT="${NOVA_FRONTEND_PORT:-5173}"
+BACKEND_PORT="${DENOVA_BACKEND_PORT:-${NOVA_BACKEND_PORT:-8080}}"
+FRONTEND_PORT="${DENOVA_FRONTEND_PORT:-${NOVA_FRONTEND_PORT:-5173}}"
 FRONTEND_URL="http://localhost:${FRONTEND_PORT}"
 BACKEND_URL="http://localhost:${BACKEND_PORT}"
-FRONTEND_BIND_HOST="${NOVA_FRONTEND_HOST:-}"
+FRONTEND_BIND_HOST="${DENOVA_FRONTEND_HOST:-${NOVA_FRONTEND_HOST:-}}"
 
 cd "${ROOT_DIR}"
 
@@ -85,7 +85,7 @@ done
 
 case "$MODE" in
   fe|frontend)
-    echo "==> Nova 前端开发服务启动"
+    echo "==> Denova 前端开发服务启动"
     echo "  前端地址: ${FRONTEND_URL}"
     if [ "${FRONTEND_BIND_HOST}" = "0.0.0.0" ]; then
         LAN_ADDRESS="$(detect_lan_address)"
@@ -117,7 +117,7 @@ case "$MODE" in
     ;;
 
   be|backend)
-    echo "==> Nova 后端开发服务启动"
+    echo "==> Denova 后端开发服务启动"
     echo "  后端地址: ${BACKEND_URL}"
     echo ""
 
@@ -125,11 +125,11 @@ case "$MODE" in
     go mod tidy
 
     echo "  按 Ctrl+C 停止服务"
-    exec go run ./cmd/nova --port "${BACKEND_PORT}" --dev-mode --no-open
+    exec go run ./cmd/denova --port "${BACKEND_PORT}" --dev-mode --no-open
     ;;
 
   all)
-    echo "==> Nova 开发服务启动"
+    echo "==> Denova 开发服务启动"
     echo "  前端地址: ${FRONTEND_URL}"
     echo "  后端地址: ${BACKEND_URL}"
     LAN_ADDRESS="$(detect_lan_address)"
@@ -157,8 +157,8 @@ case "$MODE" in
     echo "  按 Ctrl+C 停止服务"
     echo ""
 
-    export NOVA_ALLOW_LAN_ACCESS="${NOVA_ALLOW_LAN_ACCESS:-true}"
-    exec go run ./cmd/nova --port "${BACKEND_PORT}" --dev --dev-mode --no-open
+    export DENOVA_ALLOW_LAN_ACCESS="${DENOVA_ALLOW_LAN_ACCESS:-${NOVA_ALLOW_LAN_ACCESS:-true}}"
+    exec go run ./cmd/denova --port "${BACKEND_PORT}" --dev --dev-mode --no-open
     ;;
 
   *)

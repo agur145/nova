@@ -1,16 +1,18 @@
-import { useState, type ReactNode } from 'react'
-import { BookMarked, Bot, Building2, ChevronDown, FileText, Folder, Library, MapPin, Plus, ScrollText, Search, SlidersHorizontal, Sparkles, Trash2, UserRound } from 'lucide-react'
+import { useEffect, useState, type ReactNode } from 'react'
+import { BookMarked, Bot, Building2, ChevronDown, FileText, Folder, Images, Library, Loader2, MapPin, Plus, ScrollText, Search, SlidersHorizontal, Sparkles, Trash2, UserRound } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { isSaveShortcut } from '@/lib/keyboard'
 import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
-import { type LoreItem } from '@/lib/api'
+import { ImagePreviewDialog } from '@/components/common/ImagePreviewDialog'
+import { type LoreItem, workspaceAssetURL } from '@/lib/api'
 import { INTERACTIVE_OPENING_PRESET_ENTRY_ID, newBookOpeningPreset, type BookOpeningPreset } from '../opening'
-import type { Teller } from '../types'
+import type { ImagePreset, ImagePresetSlot, Teller } from '../types'
 
 const CREATOR_PATH = 'CREATOR.md'
 const CREATOR_ENTRY_ID = '__creator__'
@@ -37,6 +39,10 @@ const LOAD_MODE_OPTIONS = [
 ] as const
 const LORE_RESIDENT_ITEM_WARNING_CHARS = 8000
 const LORE_RESIDENT_TOTAL_WARNING_CHARS = 40000
+const IMAGE_PRESET_PROMPT_LIMIT = 4000
+const IMAGE_PRESET_TARGET_OPTIONS = [{ value: 'agent_system' }, { value: 'tool_request' }] as const
+type PresetResourceKind = 'teller' | 'image'
+type ImagePresetTarget = ImagePresetSlot['target']
 type LoreType = LoreItem['type']
 interface KnowledgeSection {
   id: string
@@ -58,6 +64,7 @@ const KNOWLEDGE_SECTIONS: KnowledgeSection[] = [
 ]
 
 const iconActionClassName = 'nova-nav-item border-[var(--nova-border)] bg-[var(--nova-surface-2)] text-[var(--nova-text-muted)] hover:bg-[var(--nova-hover)] hover:text-[var(--nova-text)]'
+const actionButtonClassName = 'nova-nav-item gap-1.5 border-[var(--nova-border)] bg-[var(--nova-surface-2)] text-[var(--nova-text-muted)] hover:bg-[var(--nova-hover)] hover:text-[var(--nova-text)]'
 const inputClassName = 'nova-field h-8 text-xs focus-visible:ring-0'
 const selectClassName = 'nova-field h-8 text-xs focus:ring-0'
 
@@ -69,6 +76,7 @@ export function LoreDirectory({
   onQueryChange,
   onSelect,
   onCreate,
+  onBatchGenerate,
 }: {
   items: LoreItem[]
   activeId: string
@@ -77,6 +85,7 @@ export function LoreDirectory({
   onQueryChange: (value: string) => void
   onSelect: (id: string) => void
   onCreate: (section: KnowledgeSection) => void
+  onBatchGenerate: () => void
 }) {
   const { t } = useTranslation()
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({})
@@ -99,14 +108,19 @@ export function LoreDirectory({
   return (
     <>
       <div className="border-b border-[var(--nova-border)] p-2">
-        <div className="nova-field flex h-8 items-center gap-2 rounded-[var(--nova-radius)] px-2 text-xs text-[var(--nova-text-faint)]">
-          <Search className="h-3.5 w-3.5" />
-          <input
-            className="min-w-0 flex-1 bg-transparent text-[var(--nova-text-muted)] outline-none placeholder:text-[var(--nova-text-faint)]"
-            value={query}
-            onChange={(event) => onQueryChange(event.target.value)}
-            placeholder={t('settingPanel.searchLore')}
-          />
+        <div className="flex items-center gap-2">
+          <div className="nova-field flex h-8 min-w-0 flex-1 items-center gap-2 rounded-[var(--nova-radius)] px-2 text-xs text-[var(--nova-text-faint)]">
+            <Search className="h-3.5 w-3.5" />
+            <input
+              className="min-w-0 flex-1 bg-transparent text-[var(--nova-text-muted)] outline-none placeholder:text-[var(--nova-text-faint)]"
+              value={query}
+              onChange={(event) => onQueryChange(event.target.value)}
+              placeholder={t('settingPanel.searchLore')}
+            />
+          </div>
+          <Button className={iconActionClassName} variant="outline" size="icon" disabled={saving || items.length === 0} onClick={onBatchGenerate} aria-label={t('settingPanel.loreImage.batchOpen')} title={t('settingPanel.loreImage.batchOpen')}>
+            <Images className="h-3.5 w-3.5" />
+          </Button>
         </div>
         <button
           type="button"
@@ -180,7 +194,7 @@ export function LoreDirectory({
                           activeId === item.id ? 'is-active bg-[var(--nova-active)] text-[var(--nova-text)]' : 'text-[var(--nova-text-muted)] hover:bg-[var(--nova-hover)] hover:text-[var(--nova-text)]'
                         } ${item.enabled === false ? 'opacity-50' : ''}`}
                       >
-                        <FileText className="h-3.5 w-3.5 shrink-0 text-[var(--nova-text-faint)]" />
+                        <LoreItemThumb item={item} />
                         <span className="min-w-0 flex-1 truncate">{item.name}</span>
                         {item.enabled === false ? <span className="shrink-0 text-[10px] text-[var(--nova-text-faint)]">{t('settingPanel.disabled')}</span> : null}
                       </button>
@@ -193,6 +207,22 @@ export function LoreDirectory({
         </div>
       </ScrollArea>
     </>
+  )
+}
+
+function LoreItemThumb({ item }: { item: LoreItem }) {
+  const imagePath = item.image?.image_path || ''
+  if (!imagePath) {
+    return (
+      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-[var(--nova-border)] bg-[var(--nova-surface)]">
+        <FileText className="h-3.5 w-3.5 text-[var(--nova-text-faint)]" />
+      </span>
+    )
+  }
+  return (
+    <span className="flex h-5 w-5 shrink-0 overflow-hidden rounded-md border border-[var(--nova-border)] bg-[var(--nova-surface)]">
+      <img src={workspaceAssetURL(imagePath)} alt="" className="h-full w-full object-cover" />
+    </span>
   )
 }
 
@@ -216,31 +246,57 @@ export function CreatorDirectory() {
 }
 
 export function TellerDirectory({
+  resourceKind,
   tellers,
+  imagePresets,
   activeTellerId,
+  activeImagePresetId,
   saving,
-  onSelect,
-  onCreate,
+  onResourceKindChange,
+  onSelectTeller,
+  onSelectImagePreset,
+  onCreateTeller,
+  onCreateImagePreset,
 }: {
+  resourceKind: PresetResourceKind
   tellers: Teller[]
+  imagePresets: ImagePreset[]
   activeTellerId: string
+  activeImagePresetId: string
   saving: boolean
-  onSelect: (id: string) => void
-  onCreate: () => void
+  onResourceKindChange: (kind: PresetResourceKind) => void
+  onSelectTeller: (id: string) => void
+  onSelectImagePreset: (id: string) => void
+  onCreateTeller: () => void
+  onCreateImagePreset: () => void
 }) {
   const { t } = useTranslation()
+  const createLabel = resourceKind === 'image' ? t('settingPanel.newImagePreset') : t('settingPanel.newTeller')
   return (
     <>
-      <div className="flex h-10 items-center justify-between border-b border-[var(--nova-border)] px-3">
-        <div className="text-xs font-medium text-[var(--nova-text-muted)]">{t('settingPanel.tellerDirectory')}</div>
-        <Button className={iconActionClassName} variant="outline" size="icon" disabled={saving} onClick={onCreate} aria-label={t('settingPanel.newTeller')}>
+      <div className="flex min-h-12 items-center justify-between gap-2 border-b border-[var(--nova-border)] px-3 py-2">
+        <div className="grid min-w-0 flex-1 grid-cols-2 gap-1 rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-surface)] p-0.5">
+          {(['teller', 'image'] as const).map((kind) => (
+            <button
+              key={kind}
+              type="button"
+              onClick={() => onResourceKindChange(kind)}
+              className={`h-7 min-w-0 truncate rounded-[6px] px-2 text-[11px] transition ${
+                resourceKind === kind ? 'bg-[var(--nova-active)] text-[var(--nova-text)]' : 'text-[var(--nova-text-faint)] hover:text-[var(--nova-text-muted)]'
+              }`}
+            >
+              {kind === 'image' ? t('settingPanel.presetKind.image') : t('settingPanel.presetKind.teller')}
+            </button>
+          ))}
+        </div>
+        <Button className={iconActionClassName} variant="outline" size="icon" disabled={saving} onClick={resourceKind === 'image' ? onCreateImagePreset : onCreateTeller} aria-label={createLabel}>
           <Plus className="h-3.5 w-3.5" />
         </Button>
       </div>
       <div className="border-b border-[var(--nova-border)] p-2">
         <button
           type="button"
-          onClick={() => onSelect(TELLER_CONFIG_AGENT_ENTRY_ID)}
+          onClick={() => onSelectTeller(TELLER_CONFIG_AGENT_ENTRY_ID)}
           className={`flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-xs transition ${
             activeTellerId === TELLER_CONFIG_AGENT_ENTRY_ID ? 'is-active bg-[var(--nova-active)] text-[var(--nova-text)]' : 'text-[var(--nova-text-muted)] hover:bg-[var(--nova-hover)] hover:text-[var(--nova-text)]'
           }`}
@@ -254,16 +310,31 @@ export function TellerDirectory({
           <div className="flex h-8 items-center gap-2 rounded px-2 text-xs text-[var(--nova-text-muted)]">
             <ChevronDown className="h-3.5 w-3.5 text-[var(--nova-text-faint)]" />
             <Folder className="h-3.5 w-3.5 text-[var(--nova-text-faint)]" />
-            <span className="font-medium">{t('settingPanel.rulePackages')}</span>
+            <span className="font-medium">{resourceKind === 'image' ? t('settingPanel.imagePresetDirectory') : t('settingPanel.rulePackages')}</span>
           </div>
           <div className="ml-5 space-y-0.5 border-l border-[var(--nova-border)] pl-2">
-            {tellers.map((teller) => (
+            {resourceKind === 'image' ? imagePresets.map((preset) => (
+              <button
+                key={preset.id}
+                type="button"
+                onClick={() => onSelectImagePreset(preset.id)}
+                className={`flex min-h-9 w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs transition ${
+                  activeTellerId !== TELLER_CONFIG_AGENT_ENTRY_ID && activeImagePresetId === preset.id ? 'bg-[var(--nova-active)] text-[var(--nova-text)]' : 'text-[var(--nova-text-muted)] hover:bg-[var(--nova-hover)] hover:text-[var(--nova-text)]'
+                }`}
+              >
+                <Sparkles className="h-3.5 w-3.5 shrink-0 text-[var(--nova-text-faint)]" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{preset.name}</span>
+                  <span className="block truncate text-[11px] text-[var(--nova-text-faint)]">{preset.custom ? t('settingPanel.custom') : t('settingPanel.builtIn')} · {t('settingPanel.imagePreset.ruleCount', { count: enabledImagePresetSlotCount(preset), total: normalizedImagePresetSlots(preset).length })}</span>
+                </span>
+              </button>
+            )) : tellers.map((teller) => (
               <button
                 key={teller.id}
                 type="button"
-                onClick={() => onSelect(teller.id)}
+                onClick={() => onSelectTeller(teller.id)}
                 className={`flex min-h-9 w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs transition ${
-                  activeTellerId === teller.id ? 'bg-[var(--nova-active)] text-[var(--nova-text)]' : 'text-[var(--nova-text-muted)] hover:bg-[var(--nova-hover)] hover:text-[var(--nova-text)]'
+                  activeTellerId !== TELLER_CONFIG_AGENT_ENTRY_ID && activeTellerId === teller.id ? 'bg-[var(--nova-active)] text-[var(--nova-text)]' : 'text-[var(--nova-text-muted)] hover:bg-[var(--nova-hover)] hover:text-[var(--nova-text)]'
                 }`}
               >
                 <SlidersHorizontal className="h-3.5 w-3.5 shrink-0 text-[var(--nova-text-faint)]" />
@@ -280,97 +351,375 @@ export function TellerDirectory({
   )
 }
 
+export function ImagePresetEditor({
+  draft,
+  tagDraft,
+  setDraft,
+  setTagDraft,
+  onSave,
+}: {
+  draft: ImagePreset | null
+  tagDraft: string
+  setDraft: (draft: ImagePreset | null) => void
+  setTagDraft: (value: string) => void
+  onSave: () => void
+}) {
+  const { t } = useTranslation()
+  const [activeSlotId, setActiveSlotId] = useState('')
+  const slots = draft ? normalizedImagePresetSlots(draft) : []
+  const activeSlot = slots.find((slot) => slot.id === activeSlotId) || slots[0] || null
+  const slotIDs = slots.map((slot) => slot.id).join('|')
+
+  useEffect(() => {
+    setActiveSlotId((current) => {
+      if (current && slots.some((slot) => slot.id === current)) return current
+      return slots[0]?.id || ''
+    })
+  }, [draft?.id, slotIDs])
+
+  if (!draft) {
+    return <EmptyState title={t('settingPanel.editor.noImagePresetSelected')} description={t('settingPanel.editor.noImagePresetSelectedDesc')} />
+  }
+
+  const setSlots = (nextSlots: ImagePresetSlot[]) => {
+    setDraft({ ...draft, slots: nextSlots, prompt: imagePresetPromptForTarget(nextSlots, 'tool_request'), version: 2 })
+  }
+
+  const updateSlotById = (slotId: string, patch: Partial<ImagePresetSlot>) => {
+    setSlots(slots.map((slot) => (slot.id === slotId ? { ...slot, ...patch } : slot)))
+  }
+
+  const addSlot = () => {
+    const id = `slot-${Date.now()}`
+    const slot: ImagePresetSlot = {
+      id,
+      name: t('settingPanel.imagePreset.newRuleName'),
+      target: 'tool_request',
+      enabled: true,
+      content: '',
+    }
+    setSlots([...slots, slot])
+    setActiveSlotId(id)
+  }
+
+  const deleteSlot = () => {
+    if (!activeSlot || slots.length <= 1) return
+    const nextSlots = slots.filter((slot) => slot.id !== activeSlot.id)
+    setSlots(nextSlots)
+    setActiveSlotId(nextSlots[0]?.id || '')
+  }
+
+  const selectedTarget = activeSlot?.target || 'tool_request'
+  const contentValue = activeSlot?.content || ''
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden">
+      <div className="grid shrink-0 gap-3 border-b border-[var(--nova-border)] bg-[var(--nova-surface)] p-4 lg:grid-cols-[minmax(220px,1fr)_minmax(220px,1fr)_180px_120px]">
+        <Field label={t('settingPanel.field.name')}>
+          <Input className={inputClassName} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
+        </Field>
+        <Field label={t('settingPanel.field.description')}>
+          <Input className={inputClassName} value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder={t('settingPanel.placeholder.description')} />
+        </Field>
+        <Field label={t('settingPanel.field.tags')}>
+          <Input className={inputClassName} value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} placeholder={t('settingPanel.placeholder.tags')} />
+        </Field>
+        <div className="flex items-end">
+          <span className="rounded border border-[var(--nova-border)] bg-[var(--nova-surface-2)] px-2 py-1 text-xs text-[var(--nova-text-faint)]">{draft.custom ? t('settingPanel.custom') : t('settingPanel.builtIn')}</span>
+        </div>
+      </div>
+      <div className="grid min-h-[520px] flex-1 grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)]">
+        <aside className="flex max-h-60 min-h-0 flex-col overflow-hidden border-b border-[var(--nova-border)] bg-[var(--nova-surface)] lg:max-h-none lg:border-b-0 lg:border-r">
+          <div className="flex h-11 items-center justify-between border-b border-[var(--nova-border)] px-3">
+            <div className="text-xs font-medium text-[var(--nova-text-muted)]">{t('settingPanel.imagePreset.rulesTitle')}</div>
+            <Button className={iconActionClassName} variant="outline" size="icon" onClick={addSlot} aria-label={t('settingPanel.injectRules.new')}>
+              <Plus className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="p-2">
+              {slots.map((slot) => (
+                <div key={slot.id} className={`mb-1 flex min-h-12 w-full items-center gap-2 rounded-md border px-3 py-2 text-xs transition ${activeSlot?.id === slot.id ? 'border-[var(--nova-accent)]/45 bg-[var(--nova-active)] text-[var(--nova-text)] shadow-[inset_3px_0_0_var(--nova-accent)]' : 'border-transparent text-[var(--nova-text-muted)] hover:border-[var(--nova-border)] hover:bg-[var(--nova-hover)] hover:text-[var(--nova-text)]'}`}>
+                  <button type="button" onClick={() => setActiveSlotId(slot.id)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+                    <FileText className="h-3.5 w-3.5 shrink-0 text-[var(--nova-text-faint)]" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-medium">{slot.name}</span>
+                      <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-[var(--nova-text-faint)]">
+                        <span className="truncate">{imagePresetTargetLabel(slot.target, t)}</span>
+                        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${slot.enabled ? 'bg-[var(--nova-accent-green)]' : 'bg-[var(--nova-text-faint)]/35'}`} />
+                        <span className="shrink-0">{slot.enabled ? t('settingPanel.enabled') : t('settingPanel.disabled')}</span>
+                      </span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={slot.enabled ? t('settingPanel.switch.disableRule') : t('settingPanel.switch.enableRule')}
+                    onClick={() => updateSlotById(slot.id, { enabled: !slot.enabled })}
+                    className={`relative h-5 w-9 rounded-full border transition ${slot.enabled ? 'border-[var(--nova-accent)] bg-[var(--nova-accent)]/35' : 'border-[var(--nova-border)] bg-[var(--nova-surface-2)]'}`}
+                  >
+                    <span className={`absolute top-0.5 h-3.5 w-3.5 rounded-full bg-[var(--nova-text)] transition ${slot.enabled ? 'left-4' : 'left-0.5'}`} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </ScrollArea>
+        </aside>
+
+        {activeSlot ? (
+          <section className="flex min-h-0 flex-col">
+            <div className="shrink-0 border-b border-[var(--nova-border)] bg-[var(--nova-surface)] p-4">
+              <div className="grid gap-3 lg:grid-cols-[minmax(220px,1fr)_minmax(240px,320px)_32px]">
+                <Field label={t('settingPanel.field.ruleName')}>
+                  <Input className={inputClassName} value={activeSlot.name} onChange={(event) => updateSlotById(activeSlot.id, { name: event.target.value })} />
+                </Field>
+                <Field label={t('settingPanel.field.injectTarget')}>
+                  <Select value={selectedTarget} onValueChange={(value) => updateSlotById(activeSlot.id, { target: value as ImagePresetTarget })}>
+                    <SelectTrigger className={selectClassName}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {IMAGE_PRESET_TARGET_OPTIONS.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {imagePresetTargetLabel(option.value, t)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <div className="flex items-end justify-end">
+                  <Button className={iconActionClassName} variant="outline" size="icon" disabled={slots.length <= 1} onClick={deleteSlot} aria-label={t('settingPanel.injectRules.delete')}>
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+                <div className="lg:col-span-3">
+                  <div className="min-w-0 rounded-md border border-[var(--nova-border)] bg-[var(--nova-surface-2)] px-3 py-2.5">
+                    <div className="flex items-center gap-2 text-xs font-medium text-[var(--nova-text)]">
+                      <span>{imagePresetTargetLabel(selectedTarget, t)}</span>
+                      <span className="h-1 w-1 rounded-full bg-[var(--nova-text-faint)]/50" />
+                      <span className="text-[var(--nova-text-faint)]">{imagePresetTargetSummary(selectedTarget, t)}</span>
+                    </div>
+                    <div className="mt-1 text-[11px] leading-5 text-[var(--nova-text-muted)]">{imagePresetTargetDetail(selectedTarget, t)}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="min-h-[420px] flex-1 p-4 lg:min-h-0">
+              <div className="mb-2 flex min-w-0 items-center justify-between gap-3">
+                <span className="text-xs font-medium text-[var(--nova-text)]">{t('settingPanel.imagePreset.ruleContent')}</span>
+                <span className="shrink-0 font-mono text-[10px] text-[var(--nova-text-faint)]">{contentValue.length}/{IMAGE_PRESET_PROMPT_LIMIT}</span>
+              </div>
+              <Textarea
+                className="nova-field h-[calc(100%-1.75rem)] min-h-[360px] resize-none font-mono text-sm leading-7 shadow-none focus-visible:ring-0"
+                value={contentValue}
+                maxLength={IMAGE_PRESET_PROMPT_LIMIT}
+                onChange={(event) => updateSlotById(activeSlot.id, { content: event.target.value.slice(0, IMAGE_PRESET_PROMPT_LIMIT) })}
+                placeholder={t('settingPanel.imagePreset.promptPlaceholder')}
+                onKeyDown={(event) => {
+                  if (isSaveShortcut(event)) {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    onSave()
+                  }
+                }}
+              />
+            </div>
+          </section>
+        ) : (
+          <EmptyState title={t('settingPanel.injectRules.emptyTitle')} description={t('settingPanel.imagePreset.emptyRulesDesc')} />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function normalizedImagePresetSlots(preset: Partial<ImagePreset> | null | undefined): ImagePresetSlot[] {
+  if (!preset) return []
+  const slots = Array.isArray(preset.slots) ? preset.slots : []
+  if (slots.length > 0) {
+    return slots.map((slot, index) => ({
+      id: sanitizeImagePresetSlotId(slot.id) || `slot-${index + 1}`,
+      name: slot.name?.trim() || sanitizeImagePresetSlotId(slot.id) || `slot-${index + 1}`,
+      target: isImagePresetTarget(slot.target) ? slot.target : 'tool_request',
+      enabled: slot.enabled !== false,
+      content: (slot.content || '').slice(0, IMAGE_PRESET_PROMPT_LIMIT),
+    }))
+  }
+  const prompt = preset.prompt?.trim() || ''
+  return [{
+    id: 'tool_request',
+    name: '图像请求 Prompt',
+    target: 'tool_request',
+    enabled: true,
+    content: prompt.slice(0, IMAGE_PRESET_PROMPT_LIMIT),
+  }]
+}
+
+function enabledImagePresetSlotCount(preset: Partial<ImagePreset>) {
+  return normalizedImagePresetSlots(preset).filter((slot) => slot.enabled).length
+}
+
+function imagePresetPromptForTarget(slots: ImagePresetSlot[], target: ImagePresetTarget) {
+  return slots
+    .filter((slot) => slot.enabled && slot.target === target && slot.content.trim())
+    .map((slot) => `## ${slot.name}（${slot.target}）\n\n${slot.content.trim()}`)
+    .join('\n\n')
+}
+
+function sanitizeImagePresetSlotId(id: string | undefined) {
+  return (id || '').replace(/[^a-zA-Z0-9_-]/g, '').trim()
+}
+
+function isImagePresetTarget(value: string | undefined): value is ImagePresetTarget {
+  return value === 'agent_system' || value === 'tool_request'
+}
+
+function imagePresetTargetLabel(target: ImagePresetTarget, t: (key: string) => string) {
+  return t(`settingPanel.imagePreset.target.${target}`)
+}
+
+function imagePresetTargetSummary(target: ImagePresetTarget, t: (key: string) => string) {
+  return t(`settingPanel.imagePreset.targetSummary.${target}`)
+}
+
+function imagePresetTargetDetail(target: ImagePresetTarget, t: (key: string) => string) {
+  return t(`settingPanel.imagePreset.targetDetail.${target}`)
+}
+
 export function LoreEditor({
   draft,
   tagDraft,
   residentTotalChars,
+  imagePresets,
+  imagePresetId,
+  imageInstruction,
+  imageGenerating,
   setDraft,
   setTagDraft,
+  onImagePresetChange,
+  setImageInstruction,
+  onGenerateImage,
+  onClearImage,
   onSave,
 }: {
   draft: LoreItem | null
   tagDraft: string
   residentTotalChars: number
+  imagePresets: ImagePreset[]
+  imagePresetId: string
+  imageInstruction: string
+  imageGenerating: boolean
   setDraft: (draft: LoreItem | null) => void
   setTagDraft: (value: string) => void
+  onImagePresetChange: (id: string) => void
+  setImageInstruction: (value: string) => void
+  onGenerateImage: () => void
+  onClearImage: () => void
   onSave: () => void
 }) {
   const { t } = useTranslation()
+  const [imageDialogOpen, setImageDialogOpen] = useState(false)
   if (!draft) {
     return <EmptyState title={t('settingPanel.editor.noLoreSelected')} description={t('settingPanel.editor.noLoreSelectedDesc')} />
   }
 
   const residentItemChars = draft.enabled !== false && draft.load_mode === 'resident' ? (draft.content || '').length : 0
   const residentWarning = draft.enabled !== false && draft.load_mode === 'resident' && (residentItemChars > LORE_RESIDENT_ITEM_WARNING_CHARS || residentTotalChars > LORE_RESIDENT_TOTAL_WARNING_CHARS)
+  const imagePath = draft.image?.image_path || ''
+  const imageSrc = imagePath ? workspaceAssetURL(imagePath) : ''
+  const hasImage = Boolean(imageSrc)
+  const validImagePresets = imagePresets.filter((preset) => !preset.invalid)
+  const selectedImagePresetId = imagePresetId || validImagePresets[0]?.id || 'game-cg'
+  const openGenerateLabel = imagePath ? t('settingPanel.loreImage.openRegenerate') : t('settingPanel.loreImage.openGenerate')
+  const topGridClassName = `grid shrink-0 items-stretch gap-3 border-b border-[var(--nova-border)] bg-[var(--nova-surface)] p-4 ${
+    hasImage ? 'lg:grid-cols-[15rem_minmax(0,1fr)] 2xl:grid-cols-[18rem_minmax(0,1fr)]' : 'lg:grid-cols-[12rem_minmax(0,1fr)] 2xl:grid-cols-[14rem_minmax(0,1fr)]'
+  }`
+  const imageColumnClassName = hasImage ? 'grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-1.5' : 'grid content-start gap-1.5'
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto md:overflow-hidden">
-      <div className="grid shrink-0 gap-3 border-b border-[var(--nova-border)] bg-[var(--nova-surface)] p-4 lg:grid-cols-[minmax(220px,1fr)_120px_150px_150px_170px]">
-        <Field label={t('settingPanel.field.name')}>
-          <Input className={inputClassName} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
-        </Field>
-        <Field label={t('settingPanel.field.enabled')}>
-          <Select value={String(draft.enabled ?? true)} onValueChange={(value) => setDraft({ ...draft, enabled: value === 'true' })}>
-            <SelectTrigger size="sm" className={selectClassName}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="nova-panel border text-[var(--nova-text)]">
-              <SelectItem value="true">{t('settingPanel.enabled')}</SelectItem>
-              <SelectItem value="false">{t('settingPanel.disabled')}</SelectItem>
-            </SelectContent>
-          </Select>
-        </Field>
-        <Field label={t('settingPanel.field.type')}>
-          <Select value={draft.type} onValueChange={(value) => setDraft({ ...draft, type: value as LoreItem['type'] })}>
-            <SelectTrigger size="sm" className={selectClassName}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="nova-panel border text-[var(--nova-text)]">
-              {TYPE_OPTIONS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>{loreTypeLabel(option.value, t)}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </Field>
-        <Field label={t('settingPanel.field.importance')}>
-          <Select value={draft.importance} onValueChange={(value) => setDraft({ ...draft, importance: value as LoreItem['importance'] })}>
-            <SelectTrigger size="sm" className={selectClassName}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="nova-panel border text-[var(--nova-text)]">
-              {IMPORTANCE_OPTIONS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>{loreImportanceLabel(option.value, t)}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </Field>
-        <Field label={t('settingPanel.field.loadMode')}>
-          <Select value={draft.load_mode || 'auto'} onValueChange={(value) => setDraft({ ...draft, load_mode: value as LoreItem['load_mode'] })}>
-            <SelectTrigger size="sm" className={selectClassName}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="nova-panel border text-[var(--nova-text)]">
-              {LOAD_MODE_OPTIONS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>{loreLoadModeLabel(option.value, t)}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </Field>
-        <Field label={t('settingPanel.field.tags')}>
-          <Input className={inputClassName} value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} placeholder={t('settingPanel.placeholder.tags')} />
-        </Field>
-        <Field className="lg:col-span-5" label={t('settingPanel.field.brief')}>
-          <Textarea
-            autoResize
-            className="nova-field min-h-[96px] resize-y text-xs leading-5 shadow-none focus-visible:ring-0"
-            value={draft.brief_description || ''}
-            onChange={(event) => setDraft({ ...draft, brief_description: event.target.value })}
-            placeholder={t('settingPanel.placeholder.brief')}
+      <div className={topGridClassName}>
+        <div className={imageColumnClassName}>
+          <div className="flex min-w-0 items-center justify-between gap-2">
+            <span className="text-[11px] text-[var(--nova-text-faint)]">{t('settingPanel.loreImage.current')}</span>
+            <Button className={iconActionClassName} variant="outline" size="icon-sm" disabled={imageGenerating} onClick={() => setImageDialogOpen(true)} aria-label={openGenerateLabel} title={openGenerateLabel}>
+              {imageGenerating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+            </Button>
+          </div>
+          <LoreImageCompactControl
+            imageSrc={imageSrc}
+            title={draft.name || t('settingPanel.loreImage.current')}
+            alt={draft.image?.alt_text || draft.name}
           />
-        </Field>
-        <div className="lg:col-span-5 text-[11px] leading-5 text-[var(--nova-text-faint)]">
-          {draft.load_mode === 'resident' ? t('settingPanel.lore.residentDesc') : loadModeDescription(draft.load_mode, t)}
-          {residentWarning ? <span className="ml-2 text-[var(--nova-danger)]">{t('settingPanel.lore.residentWarning')}</span> : null}
+        </div>
+        <div className="grid min-w-0 gap-3">
+          <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-[minmax(220px,1fr)_120px_150px_150px_170px]">
+            <Field label={t('settingPanel.field.name')}>
+              <Input className={inputClassName} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
+            </Field>
+            <Field label={t('settingPanel.field.enabled')}>
+              <Select value={String(draft.enabled ?? true)} onValueChange={(value) => setDraft({ ...draft, enabled: value === 'true' })}>
+                <SelectTrigger size="sm" className={selectClassName}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="nova-panel border text-[var(--nova-text)]">
+                  <SelectItem value="true">{t('settingPanel.enabled')}</SelectItem>
+                  <SelectItem value="false">{t('settingPanel.disabled')}</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label={t('settingPanel.field.type')}>
+              <Select value={draft.type} onValueChange={(value) => setDraft({ ...draft, type: value as LoreItem['type'] })}>
+                <SelectTrigger size="sm" className={selectClassName}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="nova-panel border text-[var(--nova-text)]">
+                  {TYPE_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{loreTypeLabel(option.value, t)}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label={t('settingPanel.field.importance')}>
+              <Select value={draft.importance} onValueChange={(value) => setDraft({ ...draft, importance: value as LoreItem['importance'] })}>
+                <SelectTrigger size="sm" className={selectClassName}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="nova-panel border text-[var(--nova-text)]">
+                  {IMPORTANCE_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{loreImportanceLabel(option.value, t)}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label={t('settingPanel.field.loadMode')}>
+              <Select value={draft.load_mode || 'auto'} onValueChange={(value) => setDraft({ ...draft, load_mode: value as LoreItem['load_mode'] })}>
+                <SelectTrigger size="sm" className={selectClassName}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="nova-panel border text-[var(--nova-text)]">
+                  {LOAD_MODE_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{loreLoadModeLabel(option.value, t)}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+          </div>
+          <Field label={t('settingPanel.field.tags')}>
+            <Input className={inputClassName} value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} placeholder={t('settingPanel.placeholder.tags')} />
+          </Field>
+          <Field label={t('settingPanel.field.brief')}>
+            <Textarea
+              autoResize
+              className="nova-field min-h-[4.5rem] resize-y text-xs leading-5 shadow-none focus-visible:ring-0"
+              value={draft.brief_description || ''}
+              onChange={(event) => setDraft({ ...draft, brief_description: event.target.value })}
+              placeholder={t('settingPanel.placeholder.brief')}
+            />
+          </Field>
+          <div className="text-[11px] leading-5 text-[var(--nova-text-faint)]">
+            {draft.load_mode === 'resident' ? t('settingPanel.lore.residentDesc') : loadModeDescription(draft.load_mode, t)}
+            {residentWarning ? <span className="ml-2 text-[var(--nova-danger)]">{t('settingPanel.lore.residentWarning')}</span> : null}
+          </div>
         </div>
       </div>
       <div className="min-h-[420px] flex-1 p-4 md:min-h-0">
@@ -387,7 +736,132 @@ export function LoreEditor({
           }}
         />
       </div>
+      <LoreImageGenerateDialog
+        open={imageDialogOpen}
+        itemName={draft.name || t('settingPanel.loreImage.current')}
+        imagePath={imagePath}
+        imagePresets={validImagePresets}
+        imagePresetId={selectedImagePresetId}
+        imageInstruction={imageInstruction}
+        imageGenerating={imageGenerating}
+        onOpenChange={setImageDialogOpen}
+        onImagePresetChange={onImagePresetChange}
+        setImageInstruction={setImageInstruction}
+        onGenerateImage={onGenerateImage}
+        onClearImage={onClearImage}
+      />
     </div>
+  )
+}
+
+function LoreImageCompactControl({
+  imageSrc,
+  title,
+  alt,
+}: {
+  imageSrc: string
+  title: string
+  alt: string
+}) {
+  const { t } = useTranslation()
+
+  if (!imageSrc) {
+    return (
+      <div className="flex min-h-14 min-w-0 items-center justify-center rounded-lg border border-dashed border-[var(--nova-border)] bg-[var(--nova-surface-2)] px-3 py-2 text-xs text-[var(--nova-text-faint)]">
+        {t('settingPanel.loreImage.empty')}
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex h-full min-h-48 min-w-0 overflow-hidden rounded-lg border border-[var(--nova-border)] bg-[var(--nova-surface-2)]">
+      <ImagePreviewDialog src={imageSrc} title={title} alt={alt}>
+        <button type="button" className="group h-full w-full overflow-hidden bg-[var(--nova-surface)]" aria-label={t('settingPanel.loreImage.openPreview')} title={t('settingPanel.loreImage.openPreview')}>
+          <img src={imageSrc} alt={alt} className="h-full w-full object-cover transition group-hover:scale-[1.03]" />
+        </button>
+      </ImagePreviewDialog>
+    </div>
+  )
+}
+
+function LoreImageGenerateDialog({
+  open,
+  itemName,
+  imagePath,
+  imagePresets,
+  imagePresetId,
+  imageInstruction,
+  imageGenerating,
+  onOpenChange,
+  onImagePresetChange,
+  setImageInstruction,
+  onGenerateImage,
+  onClearImage,
+}: {
+  open: boolean
+  itemName: string
+  imagePath: string
+  imagePresets: ImagePreset[]
+  imagePresetId: string
+  imageInstruction: string
+  imageGenerating: boolean
+  onOpenChange: (open: boolean) => void
+  onImagePresetChange: (id: string) => void
+  setImageInstruction: (value: string) => void
+  onGenerateImage: () => void
+  onClearImage: () => void
+}) {
+  const { t } = useTranslation()
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-[min(calc(100vw-2rem),560px)] gap-3 border border-[var(--nova-border)] bg-[var(--nova-surface)] text-[var(--nova-text)]">
+        <DialogHeader>
+          <DialogTitle>{imagePath ? t('settingPanel.loreImage.regenerate') : t('settingPanel.loreImage.generate')}</DialogTitle>
+          <DialogDescription>{t('settingPanel.loreImage.dialogDesc', { name: itemName })}</DialogDescription>
+        </DialogHeader>
+
+        <div className="grid gap-3">
+          <Field label={t('settingPanel.loreImage.preset')}>
+            <Select value={imagePresetId} onValueChange={onImagePresetChange} disabled={imageGenerating}>
+              <SelectTrigger size="sm" className={selectClassName}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="nova-panel border text-[var(--nova-text)]">
+                {imagePresets.length > 0 ? imagePresets.map((preset) => (
+                  <SelectItem key={preset.id} value={preset.id}>{preset.name}</SelectItem>
+                )) : (
+                  <SelectItem value="game-cg">{t('settingPanel.editor.defaultImagePreset')}</SelectItem>
+                )}
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label={t('settingPanel.loreImage.instruction')}>
+            <Textarea
+              className="nova-field min-h-28 resize-y text-xs leading-5 shadow-none focus-visible:ring-0"
+              value={imageInstruction}
+              onChange={(event) => setImageInstruction(event.target.value)}
+              placeholder={t('settingPanel.loreImage.instructionPlaceholder')}
+              disabled={imageGenerating}
+            />
+          </Field>
+        </div>
+
+        <DialogFooter className="border-[var(--nova-border)] bg-[var(--nova-surface-2)]">
+          <Button className={actionButtonClassName} variant="outline" size="sm" onClick={() => onOpenChange(false)}>
+            {t('common.close')}
+          </Button>
+          <Button className={actionButtonClassName} variant="outline" size="sm" disabled={!imagePath || imageGenerating} onClick={onClearImage}>
+            <Trash2 className="h-4 w-4" />
+            {t('settingPanel.loreImage.clear')}
+          </Button>
+          <Button className={actionButtonClassName} variant="outline" size="sm" disabled={imageGenerating} onClick={onGenerateImage}>
+            {imageGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+            {imagePath ? t('settingPanel.loreImage.regenerate') : t('settingPanel.loreImage.generate')}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

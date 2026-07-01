@@ -27,7 +27,7 @@ describe('api client backend availability toast', () => {
 
     expect(toast.error).toHaveBeenCalledWith('后端未启动', {
       id: 'nova-backend-unavailable',
-      description: '请先启动或重启 Nova 后端服务，然后再继续操作。',
+      description: '请先启动或重启 Denova 后端服务，然后再继续操作。',
     })
   })
 
@@ -40,7 +40,7 @@ describe('api client backend availability toast', () => {
 
     expect(toast.error).toHaveBeenCalledWith('后端未启动', {
       id: 'nova-backend-unavailable',
-      description: '请先启动或重启 Nova 后端服务，然后再继续操作。',
+      description: '请先启动或重启 Denova 后端服务，然后再继续操作。',
     })
   })
 
@@ -53,6 +53,16 @@ describe('api client backend availability toast', () => {
 
     vi.stubGlobal('fetch', vi.fn(async () => new Response('missing', { status: 502 })))
     await expect(fetchAPI('/assets/app.js')).resolves.toHaveProperty('status', 502)
+    expect(toast.error).not.toHaveBeenCalled()
+  })
+
+  it('can suppress backend-unavailable toast for expected API probes', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new TypeError('Failed to fetch')
+    }))
+
+    await expect(fetchAPI('/api/status', { suppressBackendUnavailableToast: true })).rejects.toThrow('Failed to fetch')
+
     expect(toast.error).not.toHaveBeenCalled()
   })
 

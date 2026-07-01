@@ -19,8 +19,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web-builder /src/web/dist ./web/dist
-ARG NOVA_VERSION=docker
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-s -w -X nova/internal/buildinfo.Version=${NOVA_VERSION}" -o /out/nova ./cmd/nova/
+ARG DENOVA_VERSION=docker
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-s -w -X denova/internal/buildinfo.Version=${DENOVA_VERSION}" -o /out/denova ./cmd/denova/
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
@@ -28,18 +28,18 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=go-builder /out/nova /app/nova
+COPY --from=go-builder /out/denova /app/denova
 COPY --from=web-builder /src/web/dist /app/web
 COPY skills /app/skills
 COPY config.toml /app/config.toml
 
-ENV NOVA_BACKEND_PORT=8080 \
-    NOVA_DIR=/data/.nova \
-    NOVA_SKILLS_DIR=/app/skills \
-    NOVA_WEB_DIR=/app/web \
-    NOVA_ALLOW_LAN_ACCESS=true
+ENV DENOVA_BACKEND_PORT=8080 \
+    DENOVA_DIR=/data/.denova \
+    DENOVA_SKILLS_DIR=/app/skills \
+    DENOVA_WEB_DIR=/app/web \
+    DENOVA_ALLOW_LAN_ACCESS=true
 
 EXPOSE 8080
 VOLUME ["/data"]
 
-CMD ["/app/nova", "--port", "8080", "--no-open"]
+CMD ["/app/denova", "--port", "8080", "--no-open"]

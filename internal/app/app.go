@@ -8,11 +8,11 @@ import (
 
 	"github.com/cloudwego/eino/adk"
 
-	"nova/config"
-	"nova/internal/agent"
-	"nova/internal/book"
-	"nova/internal/interactive"
-	"nova/internal/session"
+	"denova/config"
+	"denova/internal/agent"
+	"denova/internal/book"
+	"denova/internal/interactive"
+	"denova/internal/session"
 )
 
 // App 是 API 层使用的应用门面；具体业务由领域应用服务承接。
@@ -33,6 +33,7 @@ type App struct {
 	versionService         *book.VersionService
 	activeTask             *Task
 	activeInteractiveTask  *Task
+	activeLoreImageTask    *Task
 	activeAutomationTasks  map[string]*Task
 	activeAutomationRuns   map[string]automationRunState
 
@@ -177,4 +178,12 @@ func (a *App) RemoteAccessConfig() config.RemoteAccessConfig {
 		return config.RemoteAccessConfig{}
 	}
 	return a.cfg.RemoteAccessConfig()
+}
+
+// HideChapterBodyLiveOutput reports whether real-time SSE output should
+// hide novel chapter body content while preserving tool execution internally.
+func (a *App) HideChapterBodyLiveOutput() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.cfg != nil && a.cfg.HideChapterBodyLiveOutput
 }

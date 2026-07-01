@@ -2,6 +2,7 @@
 .github
 .codex
 .agents
+.denova
 .nova
 .pnpm-store
 .DS_Store
@@ -16,8 +17,11 @@ prd
 .gocache-pr
 .gomodcache
 .npm-cache
+denova-windows-test
+denova-test.exe
 nova-windows-test
 nova-test.exe
+internal/webfs/dist
 web/node_modules
 web/dist
 web/.vite

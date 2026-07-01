@@ -9,11 +9,11 @@ import (
 
 	"github.com/cloudwego/eino/adk"
 
-	"nova/config"
-	"nova/internal/agent"
-	"nova/internal/book"
-	"nova/internal/interactive"
-	"nova/internal/session"
+	"denova/config"
+	"denova/internal/agent"
+	"denova/internal/book"
+	"denova/internal/interactive"
+	"denova/internal/session"
 )
 
 // WorkspaceRuntimeManager 负责工作区运行时、书籍元信息、本地版本服务与设置等跨领域基础能力。
@@ -150,6 +150,7 @@ func (s *WorkspaceRuntimeManager) Books() []BookRecord {
 			records[i].Name = meta.Title
 		}
 		records[i].Author = meta.Author
+		records[i].CoverUpdatedAt = bookCoverUpdatedAt(records[i].Path)
 	}
 	return records
 }
@@ -341,27 +342,51 @@ func (s *WorkspaceRuntimeManager) VersionDiff(ctx context.Context, id, path stri
 	return versionService.Diff(id, path)
 }
 
-// RestoreVersion 将整本书恢复到指定版本。
-func (a *App) RestoreVersion(ctx context.Context, id string) (book.VersionCommandResult, error) {
-	return a.runtime().RestoreVersion(ctx, id)
+// VersionRestorePlan 返回恢复版本前的影响预览。
+func (a *App) VersionRestorePlan(ctx context.Context, id string, paths []string) (book.VersionRestorePlan, error) {
+	return a.runtime().VersionRestorePlan(ctx, id, paths)
 }
 
-func (s *WorkspaceRuntimeManager) RestoreVersion(ctx context.Context, id string) (book.VersionCommandResult, error) {
+func (s *WorkspaceRuntimeManager) VersionRestorePlan(ctx context.Context, id string, paths []string) (book.VersionRestorePlan, error) {
+	_ = ctx
 	versionService := s.versionService()
 	if versionService == nil {
-		return book.VersionCommandResult{}, ErrNoWorkspace
+		return book.VersionRestorePlan{}, ErrNoWorkspace
 	}
-	result, err := versionService.Restore(id, s.versionAutoSettings())
+	return versionService.RestorePlan(id, paths, s.versionAutoSettings())
+}
+
+// RestoreVersion 将整本书或指定文件恢复到目标版本。
+func (a *App) RestoreVersion(ctx context.Context, id string, paths ...[]string) (book.VersionRestoreResult, error) {
+	return a.runtime().RestoreVersion(ctx, id, paths...)
+}
+
+func (s *WorkspaceRuntimeManager) RestoreVersion(ctx context.Context, id string, paths ...[]string) (book.VersionRestoreResult, error) {
+	versionService := s.versionService()
+	if versionService == nil {
+		return book.VersionRestoreResult{}, ErrNoWorkspace
+	}
+	selectedPaths := restoreRequestPaths(paths)
+	result, err := versionService.RestoreWithPaths(id, selectedPaths, s.versionAutoSettings())
 	if err != nil {
-		return book.VersionCommandResult{}, err
+		return book.VersionRestoreResult{}, err
 	}
-	if timed, timedErr := versionService.MaybeCreateTimed(s.versionAutoSettings()); timedErr != nil {
-		log.Printf("[versions] 恢复版本后定时保存检查失败 err=%v", timedErr)
-	} else if !timed.Skipped && timed.Version != nil {
-		log.Printf("[versions] 恢复版本后创建定时版本 id=%s", timed.Version.ID)
+	if result.Scope == book.VersionRestoreScopeWorkspace {
+		if timed, timedErr := versionService.MaybeCreateTimed(s.versionAutoSettings()); timedErr != nil {
+			log.Printf("[versions] 恢复版本后定时保存检查失败 err=%v", timedErr)
+		} else if !timed.Skipped && timed.Version != nil {
+			log.Printf("[versions] 恢复版本后创建定时版本 id=%s", timed.Version.ID)
+		}
 	}
 	_ = ctx
 	return result, nil
+}
+
+func restoreRequestPaths(paths [][]string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	return paths[0]
 }
 
 // MaybeCreateTimedVersion 在写操作后按定时策略创建自动版本。
@@ -430,6 +455,7 @@ func (s *WorkspaceRuntimeManager) Settings() (config.LayeredSettings, error) {
 		layered.Access.LocalURL = config.LocalHTTPURL(cfg.RuntimeWebPort)
 		layered.Access.LANURL = config.LANHTTPURL(cfg.RuntimeWebPort)
 	}
+	layered.Runtime.DevMode = cfg.DevMode
 	cfg.Workspace = workspace
 	applySettingsLayerToConfig(&cfg, layered.User)
 	applySettingsLayerToConfig(&cfg, layered.Workspace)
@@ -442,11 +468,11 @@ func (s *WorkspaceRuntimeManager) Settings() (config.LayeredSettings, error) {
 }
 
 // UpdateUserSettings 持久化用户级配置并返回最新分层快照。
-func (a *App) UpdateUserSettings(settings config.Settings) (config.LayeredSettings, error) {
-	return a.runtime().UpdateUserSettings(settings)
+func (a *App) UpdateUserSettings(settings config.Settings, baseRevision ...string) (config.LayeredSettings, error) {
+	return a.runtime().UpdateUserSettings(settings, firstRevision(baseRevision))
 }
 
-func (s *WorkspaceRuntimeManager) UpdateUserSettings(settings config.Settings) (config.LayeredSettings, error) {
+func (s *WorkspaceRuntimeManager) UpdateUserSettings(settings config.Settings, baseRevision string) (config.LayeredSettings, error) {
 	a := s.app
 	a.mu.RLock()
 	novaDir := ""
@@ -463,7 +489,7 @@ func (s *WorkspaceRuntimeManager) UpdateUserSettings(settings config.Settings) (
 	if err != nil {
 		return config.LayeredSettings{}, err
 	}
-	if err := config.WriteSettingsFile(path, prepared); err != nil {
+	if err := config.WriteSettingsFileIfRevision(path, prepared, baseRevision); err != nil {
 		return config.LayeredSettings{}, err
 	}
 	log.Printf("[settings] 用户配置已保存 path=%s", path)
@@ -473,16 +499,17 @@ func (s *WorkspaceRuntimeManager) UpdateUserSettings(settings config.Settings) (
 	}
 	a.mu.Lock()
 	applyLayeredSettingsToConfig(a.cfg, layered)
+	syncRuntimeDiagnostics(a.cfg)
 	a.mu.Unlock()
 	return layered, nil
 }
 
 // UpdateWorkspaceSettings 持久化当前工作区配置并返回最新分层快照。
-func (a *App) UpdateWorkspaceSettings(settings config.Settings) (config.LayeredSettings, error) {
-	return a.runtime().UpdateWorkspaceSettings(settings)
+func (a *App) UpdateWorkspaceSettings(settings config.Settings, baseRevision ...string) (config.LayeredSettings, error) {
+	return a.runtime().UpdateWorkspaceSettings(settings, firstRevision(baseRevision))
 }
 
-func (s *WorkspaceRuntimeManager) UpdateWorkspaceSettings(settings config.Settings) (config.LayeredSettings, error) {
+func (s *WorkspaceRuntimeManager) UpdateWorkspaceSettings(settings config.Settings, baseRevision string) (config.LayeredSettings, error) {
 	a := s.app
 	a.mu.RLock()
 	workspace := a.workspace
@@ -490,8 +517,9 @@ func (s *WorkspaceRuntimeManager) UpdateWorkspaceSettings(settings config.Settin
 	if workspace == "" {
 		return config.LayeredSettings{}, fmt.Errorf("当前没有打开的工作区")
 	}
+	settings.LLMInputLogEnabled = nil
 	path := config.WorkspaceConfigPath(workspace)
-	if err := config.WriteSettingsFile(path, settings); err != nil {
+	if err := config.WriteSettingsFileIfRevision(path, settings, baseRevision); err != nil {
 		return config.LayeredSettings{}, err
 	}
 	log.Printf("[settings] 工作区配置已保存 path=%s", path)
@@ -501,8 +529,16 @@ func (s *WorkspaceRuntimeManager) UpdateWorkspaceSettings(settings config.Settin
 	}
 	a.mu.Lock()
 	applyLayeredSettingsToConfig(a.cfg, layered)
+	syncRuntimeDiagnostics(a.cfg)
 	a.mu.Unlock()
 	return layered, nil
+}
+
+func firstRevision(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
 }
 
 func applyLayeredSettingsToConfig(cfg *config.Config, layered config.LayeredSettings) {
@@ -565,6 +601,9 @@ func applyLayeredSettingsToConfig(cfg *config.Config, layered config.LayeredSett
 	if cfg.IDEStoryTellerID == "" && effective.IDEStoryTellerID != "" {
 		cfg.IDEStoryTellerID = effective.IDEStoryTellerID
 	}
+	if effective.IDEImagePresetID != "" {
+		cfg.IDEImagePresetID = effective.IDEImagePresetID
+	}
 	cfg.WritingSkillDefault = effective.WritingSkillDefault
 	cfg.MaxIteration = appSettingsInt(effective.MaxIteration, 0)
 	if effective.ModelMaxRetries != nil {
@@ -573,11 +612,20 @@ func applyLayeredSettingsToConfig(cfg *config.Config, layered config.LayeredSett
 	if effective.AgentIdleTimeoutSeconds != nil {
 		cfg.AgentIdleTimeoutSeconds = appAgentIdleTimeoutSeconds(effective.AgentIdleTimeoutSeconds)
 	}
+	if effective.AgentToolResultLimitKB != nil {
+		cfg.AgentToolResultLimitKB = appAgentToolResultLimitKB(effective.AgentToolResultLimitKB)
+	}
+	if effective.LLMInputLogEnabled != nil {
+		cfg.LLMInputLogEnabled = *effective.LLMInputLogEnabled
+	}
 	if effective.ChapterFilenameFormat != "" {
 		cfg.ChapterFilenameFormat = effective.ChapterFilenameFormat
 	}
 	if effective.VolumeDirFormat != "" {
 		cfg.VolumeDirFormat = effective.VolumeDirFormat
+	}
+	if effective.HideChapterBodyLiveOutput != nil {
+		cfg.HideChapterBodyLiveOutput = *effective.HideChapterBodyLiveOutput
 	}
 	if effective.ChapterGroupMin != nil {
 		cfg.ChapterGroupMin = appSettingsInt(effective.ChapterGroupMin, 3)
@@ -637,7 +685,7 @@ func applySettingsLayerToConfig(cfg *config.Config, settings config.Settings) {
 	cfg.AgentContexts = config.MergeAgentContextSettings(cfg.AgentContexts, settings.AgentContexts)
 	cfg.GeneralSubAgents = config.MergeAgentGeneralSubAgentSettings(cfg.GeneralSubAgents, settings.GeneralSubAgents)
 	cfg.SubAgents = config.MergeSubAgents(cfg.SubAgents, settings.SubAgents)
-	if settings.SkillsDir != "" && os.Getenv("NOVA_SKILLS_DIR") == "" {
+	if settings.SkillsDir != "" && os.Getenv("DENOVA_SKILLS_DIR") == "" && os.Getenv("NOVA_SKILLS_DIR") == "" {
 		cfg.SkillsDir = settings.SkillsDir
 	}
 	if settings.AllowLANAccess != nil {
@@ -655,6 +703,9 @@ func applySettingsLayerToConfig(cfg *config.Config, settings config.Settings) {
 	if settings.IDEStoryTellerID != "" {
 		cfg.IDEStoryTellerID = settings.IDEStoryTellerID
 	}
+	if settings.IDEImagePresetID != "" {
+		cfg.IDEImagePresetID = settings.IDEImagePresetID
+	}
 	if settings.WritingSkillDefault != "" {
 		cfg.WritingSkillDefault = settings.WritingSkillDefault
 	}
@@ -667,11 +718,20 @@ func applySettingsLayerToConfig(cfg *config.Config, settings config.Settings) {
 	if settings.AgentIdleTimeoutSeconds != nil {
 		cfg.AgentIdleTimeoutSeconds = appAgentIdleTimeoutSeconds(settings.AgentIdleTimeoutSeconds)
 	}
+	if settings.AgentToolResultLimitKB != nil {
+		cfg.AgentToolResultLimitKB = appAgentToolResultLimitKB(settings.AgentToolResultLimitKB)
+	}
+	if settings.LLMInputLogEnabled != nil {
+		cfg.LLMInputLogEnabled = *settings.LLMInputLogEnabled
+	}
 	if settings.ChapterFilenameFormat != "" {
 		cfg.ChapterFilenameFormat = settings.ChapterFilenameFormat
 	}
 	if settings.VolumeDirFormat != "" {
 		cfg.VolumeDirFormat = settings.VolumeDirFormat
+	}
+	if settings.HideChapterBodyLiveOutput != nil {
+		cfg.HideChapterBodyLiveOutput = *settings.HideChapterBodyLiveOutput
 	}
 	if settings.ChapterGroupMin != nil {
 		cfg.ChapterGroupMin = appSettingsInt(settings.ChapterGroupMin, 3)
@@ -694,6 +754,14 @@ func applySettingsLayerToConfig(cfg *config.Config, settings config.Settings) {
 	if settings.VersionAgentCharThreshold != nil {
 		cfg.VersionAgentCharThreshold = appSettingsInt(settings.VersionAgentCharThreshold, 3000)
 	}
+}
+
+func syncRuntimeDiagnostics(cfg *config.Config) {
+	if cfg == nil {
+		agent.SetModelInputLoggingEnabled(false)
+		return
+	}
+	agent.SetModelInputLoggingEnabled(cfg.DevMode && cfg.LLMInputLogEnabled)
 }
 
 func (s *WorkspaceRuntimeManager) versionService() *book.VersionService {
@@ -731,6 +799,20 @@ func appAgentIdleTimeoutSeconds(v *int) int {
 		return config.DefaultAgentIdleTimeoutSeconds
 	}
 	return *v
+}
+
+func appAgentToolResultLimitKB(v *int) int {
+	if v == nil || *v < 0 {
+		return config.DefaultAgentToolResultLimitKB
+	}
+	return *v
+}
+
+func agentToolResultMaxBytes(cfg config.Config) int {
+	if cfg.AgentToolResultLimitKB <= 0 {
+		return 0
+	}
+	return cfg.AgentToolResultLimitKB * 1024
 }
 
 func applyRequestLocaleToConfig(cfg *config.Config, locale string) {
