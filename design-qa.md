@@ -1,0 +1,80 @@
+# AgentChat Secondary Workspace — Design QA
+
+**Findings**
+
+- No actionable P0/P1/P2 differences remain.
+- Accepted difference: the low-fidelity mock uses a bidirectional adjustment glyph, while the implementation uses Lucide `PanelRightOpen` / `PanelRightClose`. The implemented icon communicates the current pane state more directly and remains consistent with the existing icon family.
+
+**Open Questions**
+
+- The mock's compact frame is a conceptual landscape state rather than an exact device viewport. Responsive QA therefore compares hierarchy and control behavior at `800 × 900` CSS pixels instead of claiming pixel-level compact-frame fidelity.
+
+**Implementation Checklist**
+
+- [x] Persistent right workspace with independent tabs and active state.
+- [x] First-open content chooser reusing existing Chat, Terminal, Reader, Lore, Presets, Skills, Agents, and Automations tab types.
+- [x] Hide/show without unmounting secondary content or stopping background work.
+- [x] Resizable desktop split with a balanced first-open width and persisted user width.
+- [x] Toggle anchored to the rightmost visible tab strip in both single- and split-pane states.
+- [x] Compact right-side drawer behavior.
+- [x] Chinese/English copy, dark/light themes, accessible labels, pressed state, keyboard-accessible resize separator, and hidden-running indicator.
+
+**Follow-up Polish**
+
+- No blocking polish remains. A live running Agent was not started solely for visual capture; the hidden-running dot and label are covered by component tests.
+
+## Evidence
+
+- Source visual truth: `/Users/bytedance/.codex/generated_images/019fb8f6-3092-7373-a1a4-3efcc14c2b33/exec-020b4d72-78d9-4571-8f53-1a78a96df273.png`
+- Final implementation screenshot: `/Users/bytedance/.codex/visualizations/2026/07/31/019fb8f6-3092-7373-a1a4-3efcc14c2b33/agentchat-secondary-final.png`
+- Light-theme screenshot: `/Users/bytedance/.codex/visualizations/2026/07/31/019fb8f6-3092-7373-a1a4-3efcc14c2b33/agentchat-secondary-light.png`
+- Compact closed state: `/Users/bytedance/.codex/visualizations/2026/07/31/019fb8f6-3092-7373-a1a4-3efcc14c2b33/agentchat-secondary-compact-closed.png`
+- Compact drawer state: `/Users/bytedance/.codex/visualizations/2026/07/31/019fb8f6-3092-7373-a1a4-3efcc14c2b33/agentchat-secondary-compact.png`
+- Full-view comparison, source left / implementation right: `/Users/bytedance/.codex/visualizations/2026/07/31/019fb8f6-3092-7373-a1a4-3efcc14c2b33/agentchat-secondary-desktop-comparison.png`
+- Focused toggle comparison, source left / implementation right: `/Users/bytedance/.codex/visualizations/2026/07/31/019fb8f6-3092-7373-a1a4-3efcc14c2b33/agentchat-secondary-toggle-comparison.png`
+- Compact comparison, source left / implementation right: `/Users/bytedance/.codex/visualizations/2026/07/31/019fb8f6-3092-7373-a1a4-3efcc14c2b33/agentchat-secondary-compact-comparison.png`
+
+## Capture Normalization
+
+- Source board: `1487 × 1058` pixels.
+- Desktop source state crop: `732 × 484` pixels, contained in a `720 × 512` comparison cell without distortion.
+- Desktop implementation: `1440 × 1024` CSS pixels and `1440 × 1024` captured pixels; effective density `1×`, contained in a `720 × 512` comparison cell without distortion.
+- Compact source state crop: `732 × 480` pixels. Compact implementation: `800 × 900` CSS/captured pixels at `1×`. Both are contained, not stretched; the aspect-ratio mismatch is intentionally visible.
+- Browser chrome is excluded. The screenshots contain only the Denova application viewport.
+
+## State
+
+- Route: Workspace / AgentChat.
+- Project: local `示例书` fixture.
+- Primary workspace: empty `新会话` Chat tab.
+- Secondary workspace: populated Reader tab showing `第五章 妖兽袭击`.
+- Desktop state: dark theme, split visible, balanced initial split, toggle at the far right of the secondary tab strip.
+- Alternate states: secondary hidden and restored; light theme; `800 × 900` compact primary state and right drawer.
+
+## Required Fidelity Surfaces
+
+- Fonts and typography: implementation reuses Denova's configured UI and reading fonts, weights, line heights, truncation, and antialiasing. The visual hierarchy matches the existing product and the source intent; no new font or ad-hoc type scale was introduced.
+- Spacing and layout rhythm: the Activity Navigator, primary workbench, divider, and secondary workbench preserve the source's three-region hierarchy. Existing tab-strip height, borders, radii, composer spacing, and resize handles are reused. The final toggle occupies the rightmost fixed tab-strip action slot in both visible states.
+- Colors and visual tokens: all new surfaces use existing `--nova-*` tokens and shadcn variants. Dark and light captures show consistent borders, active fills, text contrast, focus treatment, and warning-state color.
+- Image quality and asset fidelity: the target and implementation contain no new product imagery or decorative assets. Icons come from the existing Lucide dependency; no CSS art, custom SVG, emoji, or placeholder image was introduced.
+- Copy and content: all new labels are concise and provided in Chinese and English. Dynamic book/chat content differs from the mock but represents realistic local data and does not alter the interaction hierarchy.
+
+## Interaction and Accessibility Checks
+
+- Opened the right-workspace menu and selected Reader.
+- Verified menu parity with ordinary New Tab choices.
+- Hid and restored the secondary workspace; Reader remained mounted and returned to the same state.
+- Verified the toggle moves from the primary strip to the far-right secondary strip, then back to the far-right primary strip after hiding.
+- Verified the resize separator is present and semantically labelled.
+- Verified `800 × 900` compact layout shows a right-drawer launcher and opens/closes the `右侧工作区` dialog without squeezing the primary composer.
+- Verified dark and light themes through the Settings UI, then restored the user's original dark theme.
+- Verified button labels, `aria-pressed`, dialog semantics, close controls, tab roles, and separator labels in the browser accessibility snapshot.
+- Browser console checked. No panel, tab, toggle, resize, theme, or responsive errors occurred. Existing local fixture sessions emit unrelated `会话不存在` history-load errors; these predate and are outside this change.
+
+## Comparison History
+
+1. Pass 1 — P2: a pane mounted hidden opened at its `280px` minimum instead of the intended balanced split. Evidence: `/Users/bytedance/.codex/visualizations/2026/07/31/019fb8f6-3092-7373-a1a4-3efcc14c2b33/agentchat-secondary-pass1-min-width.png`. Fix: `CollapsibleResizablePanel` now accepts an explicit first-open size when no persisted layout exists; persisted layouts still restore their saved size.
+2. Pass 2 — P2: compact mode initially derived the toggle label from desktop visibility, so a closed drawer could present a hide action. Fix: compact visibility now follows `openPaneId`, with `openRight` / `closePane` actions. Pass 2 also exposed the toggle at the center divider in split mode. Evidence: `/Users/bytedance/.codex/visualizations/2026/07/31/019fb8f6-3092-7373-a1a4-3efcc14c2b33/agentchat-secondary-pass2-divider-toggle.png`.
+3. Pass 3 — P2 resolved: control ownership now follows the rightmost visible workbench. Final desktop, focused-toggle, compact, and light-theme evidence show no remaining P0/P1/P2 issue.
+
+final result: passed
