@@ -77,4 +77,16 @@
 2. Pass 2 — P2: compact mode initially derived the toggle label from desktop visibility, so a closed drawer could present a hide action. Fix: compact visibility now follows `openPaneId`, with `openRight` / `closePane` actions. Pass 2 also exposed the toggle at the center divider in split mode. Evidence: `/Users/bytedance/.codex/visualizations/2026/07/31/019fb8f6-3092-7373-a1a4-3efcc14c2b33/agentchat-secondary-pass2-divider-toggle.png`.
 3. Pass 3 — P2 resolved: control ownership now follows the rightmost visible workbench. Final desktop, focused-toggle, compact, and light-theme evidence show no remaining P0/P1/P2 issue.
 
+## 2026-08-07 Toggle Refinement
+
+- Source annotation: `/var/folders/3p/tw35s8456m1033g5yxdztf_m0000gn/T/codex-clipboard-b8cc6b73-24b7-4caa-a5e5-6140dd52346d.png` (`830 × 258` pixels).
+- Final dark capture: `/Users/bytedance/.codex/visualizations/2026/08/07/019fdc15-9fca-7cc1-8198-33b7b7c37d2f/sidepanel-final-dark.jpg` (`1280 × 720` CSS/captured pixels; browser DPR `2`, normalized output `1×`).
+- Light capture: `/Users/bytedance/.codex/visualizations/2026/08/07/019fdc15-9fca-7cc1-8198-33b7b7c37d2f/sidepanel-light-populated-folded.jpg`.
+- Narrow capture: `/Users/bytedance/.codex/visualizations/2026/08/07/019fdc15-9fca-7cc1-8198-33b7b7c37d2f/sidepanel-narrow-populated-folded.jpg` at `780 × 720`; no horizontal overflow.
+- Side-by-side focused comparison: `/Users/bytedance/.codex/visualizations/2026/08/07/019fdc15-9fca-7cc1-8198-33b7b7c37d2f/sidepanel-before-after.jpg`.
+
+The folded populated pane now has a 6 px neutral presence indicator using `--nova-accent`. The existing warning marker remains the higher-priority busy state. The toggle uses the inline end-action presentation, removing its divider without changing the separated presentation used by other workbench actions.
+
+Fonts, copy, icon family, and tab-strip height remain unchanged. Dark and light theme contrast, empty/open/folded states, hide/show behavior, and the 780 px layout passed. After restoring a transient local backend outage with the project restart script, the final browser interaction pass produced no new console errors. No P0/P1/P2 findings remain.
+
 final result: passed
