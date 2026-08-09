@@ -90,3 +90,38 @@ The folded populated pane now has a 6 px neutral presence indicator using `--nov
 Fonts, copy, icon family, and tab-strip height remain unchanged. Dark and light theme contrast, empty/open/folded states, hide/show behavior, and the 780 px layout passed. After restoring a transient local backend outage with the project restart script, the final browser interaction pass produced no new console errors. No P0/P1/P2 findings remain.
 
 final result: passed
+
+# Goal UI Design QA
+
+## Target
+
+- Source: the three Codex App screenshots supplied with the request.
+- Scope: Goal entry mode in the composer and the durable goal card above it.
+- Product boundaries: available in AgentChat and Writing Agent; absent from Game mode.
+
+## Visual comparison
+
+- Compared the supplied active-goal reference and the live Denova implementation together at desktop width.
+- Desktop implementation evidence: `/Users/bytedance/.codex/visualizations/2026/08/09/019fe743-745b-77c1-bedb-f7c6db37871a/goal-desktop.png`.
+- Narrow implementation evidence: `/Users/bytedance/.codex/visualizations/2026/08/09/019fe743-745b-77c1-bedb-f7c6db37871a/goal-narrow.png`.
+- The implementation follows the same hierarchy: status and elapsed time on the left, compact actions on the right, objective beneath, then the composer immediately below.
+- The Goal toolbar action uses the existing Denova composer typography, semantic surface colors, borders, radii, and Lucide target icon instead of introducing a parallel visual system.
+- Selected Goal mode changes the action to a removable pill and replaces the composer placeholder with measurable-goal guidance.
+- Denova intentionally retains its existing 8 px spacing used by queued/steer cards and its 56 rem adaptive composer width rather than copying Codex-specific chrome.
+
+## Interaction verification
+
+- Verified Goal mode selection, goal-specific placeholder, edit prefill, pause, clear, collapse controls, and elapsed-time rendering in the live app.
+- Verified a long Chinese objective wraps without clipping and all actions remain reachable at a 720 x 900 viewport.
+- Verified the Goal action is present in AgentChat and Writing Agent and absent from the Game composer.
+- Fixed the floating-composer pointer-event boundary found during browser QA so card actions remain clickable without allowing the floating container to block the message surface.
+
+## Theme and accessibility
+
+- Uses existing semantic theme variables only; no light-only or dark-only literal colors were introduced.
+- Every icon action has a localized accessible label, the card is a named region, and the mode toggle exposes pressed state.
+- Chinese and English strings cover commands, statuses, actions, placeholders, errors, and capability descriptions.
+
+## Notes
+
+- Live light-theme comparison passed. Switching the application setting to Dark did not update the root `data-theme` value in the current development session; this pre-existing application theme propagation issue is outside the Goal implementation. Static theme-variable inspection and frontend tests confirm the Goal components do not bypass the shared theme system.
