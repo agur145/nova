@@ -125,3 +125,29 @@ final result: passed
 ## Notes
 
 - Live light-theme comparison passed. Switching the application setting to Dark did not update the root `data-theme` value in the current development session; this pre-existing application theme propagation issue is outside the Goal implementation. Static theme-variable inspection and frontend tests confirm the Goal components do not bypass the shared theme system.
+
+# Goal and Plan Composer Toggle Design QA
+
+## Target and evidence
+
+- Source: `/var/folders/3p/tw35s8456m1033g5yxdztf_m0000gn/T/codex-clipboard-98f9bd26-aac0-4ebc-9b56-6d9a1a4b86f4.png` and the two companion Codex App screenshots supplied with the request.
+- Final focused comparison: `/Users/bytedance/.codex/visualizations/2026/08/10/goal-plan-toggle/goal-active-focused.png`.
+- Final desktop captures: `/Users/bytedance/.codex/visualizations/2026/08/10/goal-plan-toggle/goal-active-desktop.png` and `/Users/bytedance/.codex/visualizations/2026/08/10/goal-plan-toggle/plan-active-desktop.png` at `1280 × 720` CSS pixels.
+- Responsive and theme captures: `/Users/bytedance/.codex/visualizations/2026/08/10/goal-plan-toggle/goal-active-narrow.png` at `720 × 900` and `/Users/bytedance/.codex/visualizations/2026/08/10/goal-plan-toggle/goal-active-light.png`; screenshots were normalized to `1×`.
+
+## Visual and interaction checks
+
+- Inactive state has no persistent Goal or Plan indicator in the composer toolbar.
+- Input Actions lists Goal first and Plan second. Both use the existing checkbox-menu pattern and localized labels.
+- Active Goal and Plan share the same removable pill immediately to the right of the permission control, matching the source hierarchy while retaining Denova's existing spacing, typography, semantic colors, and Lucide icon family.
+- Goal and Plan are strictly mutually exclusive through the menu, `/goal`, `/plan`, and `Shift+Tab` entry paths. Closing the active pill returns focus to the composer.
+- Goal remains available in AgentChat and Writing Agent, and is absent from Game mode, including its menu item, slash command, active indicator, and durable status card.
+- Verified dark and light themes, desktop and narrow layouts, empty/inactive states, active Goal and Plan states, long composer width, focus restoration, and localized accessible labels. Browser console contained no warnings or errors from these interactions.
+- Restored the user's original `继承（深色）` theme setting after verification.
+
+## Comparison history
+
+1. Previous iteration — P2 product mismatch: Goal was always visible in the toolbar and Plan used a separate hint presentation. The updated requirement made both modes explicit, transient composer states.
+2. Final iteration — resolved: Goal moved to the top of Input Actions, active Goal and Plan reuse one removable indicator, and all entry paths enforce mutual exclusion. No P0/P1/P2 findings remain.
+
+final result: passed
