@@ -151,3 +151,36 @@ final result: passed
 2. Final iteration — resolved: Goal moved to the top of Input Actions, active Goal and Plan reuse one removable indicator, and all entry paths enforce mutual exclusion. No P0/P1/P2 findings remain.
 
 final result: passed
+
+# Diff Review Design QA
+
+Final result: passed
+
+## Compared artifacts
+
+- Reference: `/var/folders/3p/tw35s8456m1033g5yxdztf_m0000gn/T/codex-clipboard-f926cb6d-2d76-4fa8-9930-3b2e17db8779.png`
+- Dark wide implementation: `/Users/bytedance/.codex/visualizations/2026/08/13/019ffb1b-19b2-7402-bc46-f51931fdff89/diff-review-dark-wide.png`
+- Dark narrow implementation: `/Users/bytedance/.codex/visualizations/2026/08/13/019ffb1b-19b2-7402-bc46-f51931fdff89/diff-review-dark-narrow.png`
+- Light wide implementation: `/Users/bytedance/.codex/visualizations/2026/08/13/019ffb1b-19b2-7402-bc46-f51931fdff89/diff-review-light-wide.png`
+- Side-by-side comparison: `/Users/bytedance/.codex/visualizations/2026/08/13/019ffb1b-19b2-7402-bc46-f51931fdff89/diff-review-comparison.png`
+
+The reference is directional rather than a pixel-identical Denova screen: it shows a single-file large-diff mode without Denova's Agent panel. The comparison therefore checks the requested hierarchy, density, changed-file tree, and status treatment rather than unsupported pixel parity.
+
+## Verification
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| Changed files only | Pass | The review tree is projected exclusively from the review thread's file list. |
+| Hierarchical file tree | Pass | Directories are grouped, expanded initially, and toggle from the whole row. |
+| Added / modified / deleted states | Pass | Localized green plus, amber pencil, and red minus badges are rendered; conflict and accepted states remain visible. |
+| Compact density | Pass | The tree uses 24 px virtualized rows, 12 px indentation, a compact filter, and a narrower adaptive pane. |
+| Long paths | Pass | Directory hierarchy shortens visible paths and the shared filename treatment preserves extensions while truncating stems. |
+| Narrow layout | Pass | At 720 x 900, the full tree collapses to the existing changed-file dropdown with no document-level horizontal overflow. |
+| Light and dark themes | Pass | The review, tree selection, status colors, and diff surfaces were inspected in both themes. |
+| Opening motion | Pass | The underlying editor remains mounted, outer pane geometry settles in one frame, and the review enters with a 220 ms opacity/3 px compositor transition. Reduced/off motion resolves in one frame. |
+| Existing behavior | Pass | File jumping, directory toggling, filtering, selection, compact navigation, and Project explorer reuse were exercised in the app and covered by focused tests. |
+
+## Intentional differences
+
+- Denova keeps its existing review toolbar, full-thread stacked diffs, and optional Agent panel instead of copying the reference application's branch and commit controls.
+- Status badges use Denova's semantic success/warning/danger tokens so they remain legible in both supported themes.
