@@ -1,21 +1,38 @@
-import { fetchAPI, jsonHeaders, parseSSEStream, requestJSON } from './client'
-import type { AutomationActiveRun, AutomationInboxActionResult, AutomationInboxItem, AutomationRunResult, AutomationTask, AutomationTriggerEvidence, ChatMessage, SSEEvent } from './types'
+import { jsonHeaders, requestJSON } from './client'
+import type { AutomationExecutionTarget, AutomationInboxActionResult, AutomationInboxItem, AutomationRunRecord, AutomationTask, AutomationTaskDefinition, AutomationTaskTemplate, AutomationTaskUpdate, AutomationTriggerEvidence } from './types'
 
-export async function getAutomations(): Promise<AutomationTask[]> {
-  const data = await requestJSON<{ tasks: AutomationTask[] }>('/api/automations')
+export async function getAutomations(target: AutomationExecutionTarget): Promise<AutomationTask[]> {
+  const data = await requestJSON<{ tasks: AutomationTask[] }>(`/api/automations?${automationProjectQuery(target)}`)
   return data.tasks || []
 }
 
-export async function createAutomation(task: AutomationTask): Promise<AutomationTask> {
+export async function getAutomationTemplates(locale: string): Promise<AutomationTaskTemplate[]> {
+  const data = await requestJSON<{ templates: AutomationTaskTemplate[] }>(`/api/automations/templates?locale=${encodeURIComponent(locale)}`)
+  return data.templates || []
+}
+
+export async function createAutomation(definition: AutomationTaskDefinition): Promise<AutomationTask> {
   return requestJSON('/api/automations', {
     method: 'POST',
     headers: jsonHeaders,
-    body: JSON.stringify(task),
+    body: JSON.stringify({
+      scope: definition.scope,
+      target: definition.target,
+      enabled: definition.enabled,
+      name: definition.name,
+      template: definition.template,
+      prompt: definition.prompt,
+      model_profile_id: definition.model_profile_id,
+      schedule: definition.schedule,
+      triggers: definition.triggers,
+      default_action_policy: definition.default_action_policy,
+      session_strategy: definition.session_strategy,
+    } satisfies AutomationTaskDefinition),
   })
 }
 
-export async function getAutomationInbox(): Promise<AutomationInboxItem[]> {
-  const data = await requestJSON<{ items: AutomationInboxItem[] }>('/api/automations/inbox')
+export async function getAutomationInbox(target: AutomationExecutionTarget): Promise<AutomationInboxItem[]> {
+  const data = await requestJSON<{ items: AutomationInboxItem[] }>(`/api/automations/inbox?${automationProjectQuery(target)}`)
   return data.items || []
 }
 
@@ -36,11 +53,11 @@ export async function markAutomationInboxItemRead(id: string): Promise<Automatio
   return requestJSON(`/api/automations/inbox/${encodeURIComponent(id)}/read`, { method: 'POST' })
 }
 
-export async function updateAutomation(id: string, task: AutomationTask): Promise<AutomationTask> {
+export async function updateAutomation(id: string, task: AutomationTaskUpdate, baseRevision?: string): Promise<AutomationTask> {
   return requestJSON(`/api/automations/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: jsonHeaders,
-    body: JSON.stringify(task),
+    body: JSON.stringify({ ...task, base_revision: baseRevision }),
   })
 }
 
@@ -48,50 +65,25 @@ export async function deleteAutomation(id: string): Promise<void> {
   await requestJSON(`/api/automations/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
-export async function runAutomation(id: string): Promise<AutomationRunResult> {
-  return requestJSON(`/api/automations/${encodeURIComponent(id)}/run`, { method: 'POST' })
-}
-
-export async function streamAutomationRun(id: string, signal?: AbortSignal, triggerEvidence: AutomationTriggerEvidence[] = []): Promise<ReadableStream<SSEEvent>> {
-  const init: RequestInit = { method: 'POST', signal }
-  if (triggerEvidence.length > 0) {
-    init.headers = jsonHeaders
-    init.body = JSON.stringify({ trigger_evidence: triggerEvidence })
-  }
-  const res = await fetchAPI(`/api/automations/${encodeURIComponent(id)}/run/stream`, init)
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  if (!res.body) throw new Error('No response body')
-  return parseSSEStream(res.body)
-}
-
-export async function getActiveAutomationRuns(): Promise<AutomationActiveRun[]> {
-  const data = await requestJSON<{ runs: AutomationActiveRun[] }>('/api/automations/runs/active')
-  return data.runs || []
-}
-
-export async function streamAutomationRunByID(runId: string, signal?: AbortSignal): Promise<ReadableStream<SSEEvent>> {
-  const res = await fetchAPI(`/api/automations/runs/${encodeURIComponent(runId)}/stream`, { signal })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  if (!res.body) throw new Error('No response body')
-  return parseSSEStream(res.body)
-}
-
-export async function streamAutomationRunMessage(runId: string, message: string, signal?: AbortSignal): Promise<ReadableStream<SSEEvent>> {
-  const res = await fetchAPI(`/api/automations/runs/${encodeURIComponent(runId)}/chat/stream`, {
+export async function startAutomationRun(
+  id: string,
+  commandId: string,
+  triggerEvidence: AutomationTriggerEvidence[] = [],
+): Promise<AutomationRunRecord> {
+  const data = await requestJSON<{ run: AutomationRunRecord }>(`/api/automations/${encodeURIComponent(id)}/run`, {
     method: 'POST',
     headers: jsonHeaders,
-    body: JSON.stringify({ message }),
-    signal,
+    body: JSON.stringify({ command_id: commandId, trigger_evidence: triggerEvidence }),
   })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  if (!res.body) throw new Error('No response body')
-  return parseSSEStream(res.body)
+  return data.run
 }
 
-export async function abortAutomationRun(runId: string): Promise<void> {
-  await requestJSON(`/api/automations/runs/${encodeURIComponent(runId)}/abort`, { method: 'POST' })
-}
-
-export async function getAutomationRunMessages(runId: string): Promise<ChatMessage[]> {
-  return requestJSON(`/api/automations/runs/${encodeURIComponent(runId)}/messages`)
+function automationProjectQuery(target: AutomationExecutionTarget): string {
+  if (target.kind !== 'workspace' || (!target.project_id?.trim() && !target.workspace?.trim())) {
+    throw new Error('自动化需要当前项目 / Automation requires a current Project')
+  }
+  const params = new URLSearchParams()
+  if (target.project_id) params.set('project_id', target.project_id)
+  if (target.workspace) params.set('workspace', target.workspace)
+  return params.toString()
 }

@@ -2,18 +2,20 @@ package app
 
 import (
 	"context"
-	"log"
+	"fmt"
+	"log/slog"
 
 	"denova/config"
-	"denova/internal/agent"
+	agentmodeltask "denova/internal/agents/modeltask"
+	appsettings "denova/internal/app/settings"
 )
 
 // InferNovelSplitRegex runs the model-only Tool Agent for novel import chapter splitting.
 func (a *App) InferNovelSplitRegex(ctx context.Context, sample string) (string, error) {
 	runtimeCfg, workspace := a.toolAgentConfig()
-	regex, err := agent.InferChapterSplitRegex(ctx, &runtimeCfg, sample)
+	regex, err := agentmodeltask.InferChapterSplitRegex(ctx, &runtimeCfg, sample)
 	if err != nil {
-		log.Printf("[tool-agent] 小说导入章节正则推断失败 workspace=%s err=%v", workspace, err)
+		slog.ErrorContext(ctx, fmt.Sprintf("[tool-agent] 小说导入章节正则推断失败 workspace=%s err=%v", workspace, err))
 		a.persistAgentCall(config.AgentKindToolAgent, sample, "执行失败："+err.Error())
 		return "", err
 	}
@@ -28,14 +30,16 @@ func (a *App) toolAgentConfig() (config.Config, string) {
 		runtimeCfg = *a.cfg
 	}
 	workspace := a.workspace
-	novaDir := runtimeCfg.NovaDir
+	novaDir := runtimeCfg.DataDir()
 	a.mu.RUnlock()
 
 	runtimeCfg.Workspace = workspace
-	if layered, err := config.LoadLayeredWithStartupConfig(novaDir, workspace); err == nil {
-		applyLayeredSettingsToConfig(&runtimeCfg, layered)
+	if layered, err := config.LoadLayeredWithStartupConfigAt(
+		novaDir, workspace, config.ProjectConfigPath(runtimeCfg.ProjectStateDir),
+	); err == nil {
+		appsettings.ApplyLayered(&runtimeCfg, layered)
 	} else {
-		log.Printf("[tool-agent] 加载分层配置失败 workspace=%s err=%v", workspace, err)
+		slog.ErrorContext(context.Background(), fmt.Sprintf("[tool-agent] 加载分层配置失败 workspace=%s err=%v", workspace, err))
 	}
 	return runtimeCfg, workspace
 }

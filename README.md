@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>Denova 是面向小说写作与剧情驱动游戏的 AI 创作平台，由 AI Agents、Skills、Subagent Workflows、Automations、图像生成和版本化项目工作区驱动。</strong>
+  <strong>Denova 一个面向小说创作与 AI 角色扮演游戏的 AI 创作平台，内置支持 AI Agents、Skills、Subagent Workflows、自动化、图像自动生成与项目版本管理等核心能力</strong>
 </p>
 
 <p align="center">
@@ -11,6 +11,7 @@
 </p>
 
 <p align="center">
+  <a href="https://discord.gg/QuHu2aPya"><img src="https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white" alt="加入 Denova Discord" /></a>
   <a href="https://github.com/alfredxw/denova/releases"><img alt="Release" src="https://img.shields.io/github/v/release/alfredxw/denova?style=flat-square"></a>
   <a href="./LICENSE"><img alt="License" src="https://img.shields.io/github/license/alfredxw/denova?style=flat-square"></a>
   <img alt="Go" src="https://img.shields.io/badge/Go-1.26%2B-00ADD8?style=flat-square&logo=go&logoColor=white">
@@ -18,7 +19,7 @@
 </p>
 
 <p align="center">
-  当前版本：<strong>v0.1.18</strong>（2026-07-01） · Beta
+  当前版本：<strong>v0.3.3</strong>（2026-07-25） · Beta
 </p>
 
 ![Denova 写作模式](./img/ide.png)
@@ -52,19 +53,23 @@ Denova 面向长期创作项目和互动娱乐，把写作 IDE、互动故事、
 
 ## 核心能力
 
-- **写作模式**：面向小说创作，支持 Markdown 编辑、多 Tab、全局搜索、章节统计、大纲、章节组细纲、进度追踪和现有小说导入。
-- **创作 Agent**：可读取选区、文件和资料库，调用工具生成或修改章节，并通过 Skills / SubAgents 适配不同写作任务、文风和工作流。
-- **游戏模式**：运行互动文字冒险，支持玩家输入、剧情分支、故事线切换、行动建议、场景记忆和长期故事记忆。
-- **资料库与预设**：沉淀角色、世界观、地点、势力、规则、物品等稳定设定；叙事方案和图像方案可分别管理并在写作与游戏中复用。
+- **写作模式**：面向小说创作，支持 Markdown 编辑、多 Tab、正则查找与替换、带自动备份的工作区全局替换、章节统计、大纲、章节组细纲、进度追踪、正文评论、Change Review 和现有小说导入。
+- **创作 Agent**：可读取选区、文件、资料库和可信审阅意见，调用工具生成或修改章节，并通过 Skills / SubAgents 适配不同写作任务、文风和工作流；通用工具采用 `read / write / edit / glob / grep / bash|pwsh / web_search / web_fetch / browser / todo / ask / skill / task` 的小接口。写入仍进入累计 Diff，可审阅、评论与撤销。
+- **游戏模式**：运行互动文字冒险，支持玩家输入、剧情分支、故事线切换、后台导演运行策略、行动建议、已保存 AI 回复修正、可检索回合历史、可归档恢复的 Actor State 与自定义状态布局，以及由全屏导演台管理的目标、压力、代价、事件卡包和规则检定。
+- **资料库与预设**：沉淀角色、世界观、地点、势力、规则、物品等稳定设定；叙事风格负责文风、提示词槽位和场景风格，故事导演可插拔组合叙事风格、事件包、TRPG 检定、状态系统和图像方案，且每个模块都可独立关闭；状态系统同时提供可复用词条库，模板决定各类 Actor 创建时的抽取规则。
 - **图像创作**：支持章节插画、互动图像和书籍封面生成，复用 OpenAI 兼容图像模型配置，并在界面中预览和管理结果。
-- **上下文管理**：渐进式组织模型可见上下文，支持 Memory Compact、缓存优化和有界工具结果，降低长篇创作的上下文噪音与 token 成本。
-- **版本与恢复**：基于本地 Git 保存版本、查看 Diff、恢复历史，并支持定时保存和 Agent 大量输出后的自动保存。
+- **上下文管理**：渐进式组织模型可见上下文，支持上下文来源展开与一键复制、带回合来源的历史检查点、缓存优化和有界工具结果，降低长篇创作的上下文噪音与 token 成本。
+- **版本与恢复**：基于本地 Git 保存版本、查看 Diff、恢复历史，并通过工作区变更账本提供跨重启的 Agent 修改 Undo/Redo，以及定时和 Agent 大量输出后的自动保存。
 - **自动化**：支持定时任务、Review、自动续写和自定义 Prompt 工作流。
 - **产品化体验**：中英文界面、浅色/深色主题、OpenAI 兼容模型配置、远程访问、PWA 手机使用，以及 Windows / macOS / Linux 全平台支持。
 
 ## 写作模式与游戏模式
 
-Denova 有两个并列工作台。写作模式关注小说生产线：构思、设定、大纲、章节细纲、正文和进度；游戏模式关注可游玩的互动叙事：玩家行动、剧情分支、场景记忆、故事线和选择推进。
+Denova 有两个并列工作台。写作模式关注小说生产线：构思、设定、大纲、章节细纲、正文和进度；游戏模式关注可游玩的互动叙事：玩家行动、剧情分支、回合历史、Actor State、故事线和选择推进。
+
+游戏模式内置故事导演，会在首个场景开始前结合开局设定和资料库，安排当前舞台、关键角色与势力、线索、风险和近期分支；游戏进行中，它会持续根据玩家的选择调整剧情方向，在尊重自由行动的同时维持人物动机、世界规则和伏笔的连贯。资料库中的重要角色、地点、势力与规则会优先进入剧情，让创作者沉淀的设定真正参与冒险。每个回合都会努力带来新的信息、关系变化、压力、收益、代价或悬念，并在合适的位置提供可继续行动的建议。
+
+创作者可以自由组合叙事风格、事件包、TRPG 检定、状态系统和图像方案，也可以按故事需要关闭其中任一模块。事件包为导演提供可选的剧情素材，支持埋设、推进、回收和放弃；状态系统会从真实开局中适配故事需要长期追踪的属性、资源、关系、伤势与词条；TRPG 检定支持固定 d20 规则和状态加成。历史事实以已提交 Turn 为真源，当前可计算事实归 Actor State，稳定设定归资料库，未来意图归 `director.md`；Agent 可通过有界的回合历史检索找回早期事实，不再维护第二套可写真源。全屏导演台集中展示与编辑当前规划、事件和执行审计，右侧状态栏持续呈现角色与世界变化；已保存的 AI 回复也可以直接修正，而无需重新生成回合。
 
 两种模式会共享适合长期复用的资产，例如资料库、方案预设、模型与 Agent 配置、Skills、版本管理和基础设置。写作进度、章节细纲等生产状态不会自动进入游戏模式；如果互动故事需要引用某段正文或当前进度，建议先把稳定信息沉淀进资料库，或在输入中明确引用。
 
@@ -72,35 +77,35 @@ Denova 有两个并列工作台。写作模式关注小说生产线：构思、�
 
 Denova 仍在快速迭代中，欢迎反馈问题、分享用法或一起讨论创作工作流。
 
+加入 [Discord 社区](https://discord.gg/QuHu2aPya) 一起交流。
+
 <p align="center">
-  <img src="./img/wechat.png" alt="微信交流" width="240">
+  <img src="./img/wechat.jpg" alt="微信交流" width="240">
 </p>
 
 ## 快速开始
 
-### 下载 Release
-
-从 [GitHub Releases](https://github.com/alfredxw/denova/releases) 下载对应平台压缩包，解压后运行：
+macOS / Linux 一键安装：
 
 ```bash
-./denova
+curl -fsSL https://raw.githubusercontent.com/alfredxw/denova/master/scripts/install.sh | sh
 ```
 
-Windows 用户运行 `denova.exe`。macOS 如果提示安全限制，可以执行：
+安装完成后运行 `denova`。
 
-```bash
-xattr -dr com.apple.quarantine denova
-```
+也可以从 [GitHub Releases](https://github.com/alfredxw/denova/releases) 手动下载对应平台的安装包。脚本仅支持 macOS 和 Linux，Windows 需要手动下载并运行 `denova.exe`。
+
+Release 包已内置经过 SHA-256 校验的 ripgrep，无需单独安装；Denova 的 `grep` 工具会优先使用包内版本。
 
 ### 从源码运行
 
-需要 Go 1.26+、Node.js 20+ 和 pnpm。
+开发启动需要 Go 1.26.6+、Node.js 20+、pnpm 和 PATH 中可用的 ripgrep；`scripts/build.sh` 生成的可分发目录会自动下载并内置固定版本。
 
 ```bash
 git clone https://github.com/alfredxw/denova.git
 cd denova
 corepack enable
-./bootstrap.sh
+./scripts/bootstrap.sh
 ```
 
 默认地址：
@@ -108,44 +113,9 @@ corepack enable
 - 前端：`http://localhost:5173`
 - 后端：`http://localhost:8080`
 
-### 方式三：Docker 部署
-
-需要 Docker 或 Docker Compose。先复制环境变量模板并设置远程访问账号密码：
-
-```bash
-cp .env.docker.example .env
-```
-
-编辑 `.env`，至少修改：
-
-```bash
-DENOVA_REMOTE_ACCESS_USERNAME=denova
-DENOVA_REMOTE_ACCESS_PASSWORD=change-this-password
-```
-
-启动：
-
-```bash
-docker compose up -d --build
-```
-
-访问：
-
-```text
-http://localhost:8080
-```
-
-同一局域网设备可访问：
-
-```text
-http://<宿主机局域网IP>:8080
-```
-
-Docker 部署使用 release 静态前端，不启动 Vite。容器内数据目录是 `/data`，默认通过 Docker volume `denova-data` 持久化；用户级配置写入 `/data/.denova`。如果要指定固定作品目录，可以在 `docker-compose.yml` 中增加 `DENOVA_WORKSPACE=/data/workspace`，并把宿主机目录挂载到对应路径。
-
 ## 模型与配置
 
-Denova 使用 OpenAI 兼容接口。推荐先在设置页配置语言模型、图像模型、Agent 参数、默认写作 Skill、编辑器、游戏模式、版本管理、语言、主题和字体。
+Denova 的语言模型将 provider 与 API 协议分开配置：provider 从内置服务商目录选择，协议统一为 OpenAI Chat Completions、OpenAI Responses 或 Anthropic Messages。自定义端点选择「兼容 / 自定义端点」服务商，再设置协议与 Base URL；Gemini 使用 Google 官方的 OpenAI 兼容入口。OpenAI 默认使用 Responses API，DeepSeek 同时提供 Chat Completions、Responses 与 Anthropic 路由，MiniMax 默认使用能完整续传 thinking block 的 Anthropic 路由。设置页会按当前协议通过 OpenAI-compatible 或 Anthropic `/models` 获取模型候选，但模型名始终可自定义；也可直接用当前未保存配置发送一次最小生成请求来测试连接。旧 `model_profiles` 的 `openai_*` 字段和下面的 `OPENAI_*` 环境变量会继续按 Chat Completions 兼容读取。推荐先在设置页配置语言模型、图像模型、Agent 参数、默认写作 Skill、编辑器、游戏模式、版本管理、语言、主题和字体。
 
 需要脚本化启动或部署时，也可以用环境变量覆盖模型配置：
 
@@ -167,18 +137,19 @@ export DENOVA_SKILLS_DIR="./skills"
 export DENOVA_WEB_DIR="./web"
 export DENOVA_BACKEND_PORT="8080"
 export DENOVA_FRONTEND_PORT="5173"
-export DENOVA_ALLOW_LAN_ACCESS="true"
-export DENOVA_REMOTE_ACCESS_USERNAME="denova"
-export DENOVA_REMOTE_ACCESS_PASSWORD="your-remote-password"
 ```
 
 配置优先级：
 
 ```text
-内置默认值 < 全局 config.toml < 用户级配置 < 工作区级配置 < 环境变量
+内置默认值 < 全局 config.toml < 用户级配置 < 环境变量
 ```
 
-旧工作区和旧环境变量仍会兼容读取；新配置建议使用 `.denova` / `DENOVA_*`。
+设置页中的通用、写作与游戏偏好统一保存为用户配置。工作区 `.denova/config.toml` 只承载 Agent 页明确提供的工作区定制；旧文件中的其他字段会保留，但不再覆盖用户设置。旧环境变量仍会兼容读取；新配置建议使用 `.denova` / `DENOVA_*`。
+
+Agent 的只读工具并发数可在设置页或 Agents 页配置，默认 8、范围 1–64；工作区值会覆盖用户值。该并发只作用于连续的只读工具，工作区写入和 child 工具仍按严格顺序执行。
+
+Agents 页按后端解析后的能力清单展示每类 Agent 的真实工具权限，不在前端维护另一份默认值。最终权限是 Agent kind 硬能力上限与配置覆盖的交集；`runtime_check` 表示条件能力，不保证本次运行一定注册具体工具。`shell` 会按平台暴露为 `bash` 或 `pwsh`；网页搜索与网页抓取可分别授权。配置管理统一使用 `config_read` / `config_apply`，资源工作流由内置 `config-manager` Skill 的按需 references 说明。
 
 ## 远程访问与手机使用
 
@@ -200,25 +171,63 @@ denova.example.com {
 }
 ```
 
+## Docker 部署
+
+`master-docker` 提供多阶段 Docker 构建：镜像内编译 Go 后端、构建 Vite 前端，并由同一个后端服务提供 `/` 和 `/api`。运行数据、用户配置、项目索引、项目状态和日志都保存在 `/data`，默认使用 Docker volume `denova-data` 持久化。
+
+目标机器需要安装 Docker Engine 和 Docker Compose v2。部署步骤：
+
+```bash
+git clone --branch master-docker https://github.com/alfredxw/denova.git
+cd denova
+cp .env.docker.example .env
+chmod 600 .env
+# 编辑 .env，至少修改 DENOVA_REMOTE_ACCESS_PASSWORD，按需填写模型 API 配置
+docker compose up -d --build
+docker compose ps
+docker compose logs -f denova
+```
+
+启动后访问 `http://<服务器IP>:8080`。主机端口可在 `.env` 中通过 `DENOVA_HOST_PORT` 修改；`DENOVA_WORKSPACE` 留空时可在界面中选择或创建项目，指定时必须使用容器内路径，例如 `/data/projects/default`。不要把宿主机路径直接填入 `DENOVA_WORKSPACE`，除非该路径已挂载到容器。
+
+Compose 会启用局域网访问并使用 `.env` 中的 Basic Auth 账号密码。直接暴露到公网前，应使用 Caddy / Nginx 终止 HTTPS，并只开放反向代理端口；不要把默认密码用于生产环境。
+
+常用维护命令：
+
+```bash
+docker compose build --pull
+docker compose up -d --build
+docker compose logs -f denova
+docker compose down
+```
+
+`docker compose down` 不会删除 `denova-data`。删除数据需要明确执行 `docker volume rm denova-data`，请先完成备份。
+
 ## 开发
 
 启动前后端：
 
 ```bash
-./bootstrap.sh
+./scripts/bootstrap.sh
 ```
 
 分开启动前端或后端：
 
 ```bash
-./bootstrap.sh fe
-./bootstrap.sh be
+./scripts/bootstrap.sh fe
+./scripts/bootstrap.sh be
+```
+
+停止当前仓库中运行的 Denova 后端并以前台方式重启：
+
+```bash
+./scripts/restart-backend.sh
 ```
 
 允许局域网设备访问前端开发服务：
 
 ```bash
-./bootstrap.sh fe --lan
+./scripts/bootstrap.sh fe --lan
 ```
 
 ## 赞助项目
@@ -228,16 +237,6 @@ denova.example.com {
 <p align="center">
   <img src="./img/donate.png" alt="捐赠" width="240">
 </p>
-
-## Star History
-
-<a href="https://www.star-history.com/#alfredxw/denova&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=alfredxw/denova&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=alfredxw/denova&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=alfredxw/denova&type=date&legend=top-left" />
- </picture>
-</a>
 
 ## License
 

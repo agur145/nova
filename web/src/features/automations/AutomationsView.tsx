@@ -1,22 +1,16 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Bot, Clock3, FileText, Inbox, Loader2, MessageSquareText, PanelLeft, Play, Plus, RefreshCw, Save, Settings2, Square, Trash2, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Clock3, Inbox, Loader2, Play, Plus, RefreshCw, Settings2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { InlineErrorNotice } from '@/components/common/inline-error-notice'
+import { ConfirmDialog } from '@/components/common/ConfirmDialog'
+import { EmptyState } from '@/components/common/EmptyState'
+import { LoadingState } from '@/components/common/LoadingState'
+import { AutosaveStatusIndicator } from '@/components/forms/autosave-status'
 import { AdaptiveSurface } from '@/components/layout/adaptive-surface'
+import { FeaturePageShell } from '@/components/layout/feature-page-shell'
+import { MobilePaneTrigger } from '@/components/layout/mobile-pane-trigger'
+import { SidebarVisibilityToggle } from '@/components/layout/sidebar-visibility-toggle'
 import { ConfigManagerChat } from '@/components/Chat/ConfigManagerChat'
-import { MessageList } from '@/components/Chat/MessageList'
-import { InputArea } from '@/components/Chat/InputArea'
-import { Textarea } from '@/components/ui/textarea'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
+import { Button } from '@/components/ui/button'
 import {
   createAutomation,
   deleteAutomation,
@@ -24,132 +18,353 @@ import {
   confirmAutomationInboxItem,
   dismissAutomationInboxItem,
   getAutomationInbox,
+  getAutomationTemplates,
   getAutomations,
-  getActiveAutomationRuns,
   markAutomationInboxItemRead,
-  updateAutomation,
+  startAutomationRun,
+  createAgentCommandID,
   type AutomationInboxItem,
   type AutomationRunRecord,
   type AutomationTask,
+  type AutomationTaskTemplate,
   type AutomationTriggerDefinition,
 } from '@/lib/api'
-import { useSkillCommands } from '@/hooks/useSkillCommands'
-import { fetchSettings } from '@/features/settings/api'
-import type { Settings, ModelProfileSettings } from '@/features/settings/types'
-import { modelProfileID, modelProfileLabel, modelProfilesWithDefault } from '@/features/settings/model-profiles'
-import { useAutomationRunStream } from './useAutomationRunStream'
+import { fetchProjectSettings } from '@/features/settings/api'
+import { getAgentChatProjects } from '@/features/agent-chat/api'
+import { requestAgentChatSessionNavigation } from '@/features/agent-chat/session-navigation'
+import { rebaseJSONWithRecovery } from '@/lib/autosave/rebase-with-recovery'
+import { rebaseJSONValue } from '@/lib/three-way-rebase'
+import type { Settings } from '@/features/settings/types'
+import {
+  isProjectChangeForProject,
+  workspaceChangePaths,
+  type WorkspaceChangeEvent,
+} from '@/features/changes/types'
 import { InboxPanel } from './AutomationInboxPanel'
-import { TriggerEditor, defaultScheduleTrigger } from './AutomationTriggerEditor'
+import { AutomationConfigPanel } from './AutomationConfigPanel'
+import { AutomationTaskCatalog } from './AutomationTaskCatalog'
+import { automationTaskKey, findAutomationTaskByTarget, findAutomationTaskForRun } from './automation-catalog'
+import {
+  AUTOMATION_NAVIGATION_EVENT,
+  consumeAutomationNavigation,
+  type AutomationNavigationTarget,
+} from './automation-navigation'
+import {
+  automationTaskDraftSignature,
+  cloneAutomationTask,
+  defaultAutomationTarget,
+  newAutomationTask,
+  newAutomationTaskFromTemplate,
+  normalizeAutomationTaskShape,
+  upsertAutomationTask,
+} from './automation-task-draft'
+import { useAutomationAutosave } from './use-automation-autosave'
+import { buildAutomationModelProfileOptions, inheritedAutomationModelProfileLabel } from './automation-model-profiles'
+import {
+  automationProjectOptions,
+  automationProjectTarget,
+  automationTaskProjectID,
+  defaultAutomationProject,
+  type AutomationProjectOption,
+} from './automation-projects'
 
-const fieldCls = 'nova-field min-h-7 w-full min-w-0 rounded-[var(--nova-radius)] border px-2.5 py-1.5 outline-none placeholder:text-[var(--nova-text-faint)] focus:border-[var(--nova-field-focus-border)] focus:bg-[var(--nova-surface-3)]'
-const tabCls = 'nova-nav-item rounded-[var(--nova-radius)] px-2.5 py-1 text-xs'
-type AutomationPanelView = 'config' | 'inbox' | 'run' | 'agent'
+type AutomationPanelView = 'config' | 'inbox' | 'agent'
 
-export function AutomationsView({ workspace, onClose }: { workspace: string; onClose?: () => void }) {
-  const { t } = useTranslation()
+export function AutomationsView({
+  projectId = '',
+  projectType = 'book',
+  onOpenAgentChat,
+  onClose,
+}: {
+  projectId?: string
+  projectType?: 'book' | 'general'
+  workspace: string
+  onOpenAgentChat?: () => void
+  onClose?: () => void
+}) {
+  const { t, i18n } = useTranslation()
+  const unassignedProjectTarget = useMemo(
+    () => defaultAutomationTarget({ projectId: '', workspace: '' }),
+    [],
+  )
   const [tasks, setTasks] = useState<AutomationTask[]>([])
+  const [projects, setProjects] = useState<AutomationProjectOption[]>([])
+  const [templates, setTemplates] = useState<AutomationTaskTemplate[]>([])
   const [inboxItems, setInboxItems] = useState<AutomationInboxItem[]>([])
   const [effectiveSettings, setEffectiveSettings] = useState<Settings | null>(null)
   const [activeId, setActiveId] = useState<string>('')
-  const [draft, setDraft] = useState<AutomationTask>(() => newTask('workspace'))
-  const [scopeFilter, setScopeFilter] = useState<'workspace' | 'user'>('workspace')
+  const activeIdRef = useRef('')
+  const [draft, setDraft] = useState<AutomationTask>(() => newAutomationTask(unassignedProjectTarget, t('automations.defaultName')))
+  const [creating, setCreating] = useState(false)
   const [panelView, setPanelView] = useState<AutomationPanelView>('config')
+  const [sidebarVisible, setSidebarVisible] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [initialLoadComplete, setInitialLoadComplete] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string; scope: AutomationTask['scope'] } | null>(null)
-  const [runInputAreaHeight, setRunInputAreaHeight] = useState(0)
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null)
+  const [navigationTarget, setNavigationTarget] = useState<AutomationNavigationTarget | null>(null)
+  const mountedRef = useRef(true)
+  const loadSequenceRef = useRef(0)
+  const draftDirtyRef = useRef(false)
+  const draftRef = useRef(draft)
+  const taskBaselineRef = useRef<AutomationTask | null>(null)
+  const creatingRef = useRef(creating)
+  draftRef.current = draft
+  creatingRef.current = creating
 
   const load = useCallback(async () => {
+    const sequence = loadSequenceRef.current + 1
+    loadSequenceRef.current = sequence
     try {
-      const [data, inbox, settings] = await Promise.all([getAutomations(), getAutomationInbox(), fetchSettings()])
-      const normalized = data.map(normalizeTaskShape)
+      const locale = i18n.resolvedLanguage || i18n.language || 'zh-CN'
+      const projectDirectory = automationProjectOptions(await getAgentChatProjects())
+      const targets = projectDirectory.map((project) => automationProjectTarget(project))
+      const [taskTemplates, catalogGroups] = await Promise.all([
+        getAutomationTemplates(locale),
+        Promise.allSettled(targets.map(async (target) => {
+          const [projectTasks, projectInbox] = await Promise.all([
+            getAutomations(target),
+            getAutomationInbox(target),
+          ])
+          return {
+            tasks: projectTasks.map((task) => normalizeAutomationTaskShape(task, target)),
+            inbox: projectInbox,
+          }
+        })),
+      ])
+      if (!mountedRef.current || sequence !== loadSequenceRef.current) return
+      const failedProjects: AutomationProjectOption[] = []
+      const normalized = catalogGroups.flatMap((group, index) => {
+        if (group.status === 'fulfilled') return group.value.tasks
+        const project = projectDirectory[index]
+        failedProjects.push(project)
+        console.error(`[automations] failed to load Project catalog project_id=${project.id}`, group.reason)
+        return []
+      })
+      const inbox = catalogGroups.flatMap((group) => group.status === 'fulfilled' ? group.value.inbox : [])
+      // A Project switch must not discard an existing dirty definition while
+      // the current request is still settling.
+      const preserveDraft = draftDirtyRef.current && Boolean(activeIdRef.current || creatingRef.current)
       setTasks(normalized)
+      setProjects(projectDirectory)
+      setTemplates(taskTemplates)
       setInboxItems(inbox)
-      setEffectiveSettings(settings.effective)
-      const first = normalized.find((task) => task.scope === scopeFilter) ?? normalized[0]
-      if (first) {
-        setActiveId(first.id || '')
-        setDraft(cloneTask(first))
-      } else {
-        setActiveId('')
-        setDraft(newTask(scopeFilter))
+      setError(failedProjects.length > 0
+        ? t('automations.project.loadPartial', { count: failedProjects.length })
+        : null)
+      const selected = normalized.find((task) => automationTaskKey(task) === activeIdRef.current) ?? normalized[0]
+      if (preserveDraft && selected && automationTaskKey(selected) === activeIdRef.current) {
+        const previousBaseline = taskBaselineRef.current
+        const draftAtReloadStart = draftRef.current
+        const nextDraft = previousBaseline && automationTaskKey(previousBaseline) === activeIdRef.current
+          ? await rebaseJSONWithRecovery({
+              resource: 'automation',
+              scope: projectId,
+              id: activeIdRef.current,
+              baseline: { revision: previousBaseline.revision, value: previousBaseline },
+              local: { revision: draftAtReloadStart.revision, value: draftAtReloadStart },
+              external: { revision: selected.revision, value: selected },
+            })
+          : draftRef.current
+        if (!mountedRef.current || sequence !== loadSequenceRef.current) return
+        taskBaselineRef.current = cloneAutomationTask(selected, unassignedProjectTarget)
+        const latestDraft = draftRef.current
+        const draftWithNewerEdits = latestDraft === draftAtReloadStart
+          ? nextDraft
+          : rebaseJSONValue(draftAtReloadStart, latestDraft, nextDraft)
+        const clonedDraft = cloneAutomationTask(draftWithNewerEdits, unassignedProjectTarget)
+        draftRef.current = clonedDraft
+        setDraft(clonedDraft)
+      } else if (!preserveDraft) {
+        draftDirtyRef.current = false
+        if (selected) {
+          const key = automationTaskKey(selected)
+          activeIdRef.current = key
+          setActiveId(key)
+          taskBaselineRef.current = cloneAutomationTask(selected, unassignedProjectTarget)
+          const clonedDraft = cloneAutomationTask(selected, unassignedProjectTarget)
+          draftRef.current = clonedDraft
+          setDraft(clonedDraft)
+          setCreating(false)
+        } else {
+          activeIdRef.current = ''
+          setActiveId('')
+          taskBaselineRef.current = null
+          const emptyDraft = newAutomationTask(unassignedProjectTarget, t('automations.defaultName'))
+          draftRef.current = emptyDraft
+          setDraft(emptyDraft)
+          setCreating(false)
+        }
       }
     } catch (e) {
+      if (!mountedRef.current || sequence !== loadSequenceRef.current) return
       setError((e as Error).message)
+    } finally {
+      if (mountedRef.current && sequence === loadSequenceRef.current) setInitialLoadComplete(true)
     }
-  }, [scopeFilter])
+  }, [i18n.language, i18n.resolvedLanguage, t, unassignedProjectTarget])
 
-  const runStream = useAutomationRunStream({ onFinished: load })
-  const { resume: resumeAutomationRun } = runStream
-  const running = runStream.isStreaming
-  const skillCommands = useSkillCommands({ agentKey: 'automation', workspace, fallbackEnabled: true })
-  const runMessageListBottomPadding = runInputAreaHeight > 0 ? runInputAreaHeight + 20 : undefined
+  const draftProject = projects.find((project) => project.id === automationTaskProjectID(draft))
+  useEffect(() => {
+    let cancelled = false
+    setEffectiveSettings(null)
+    if (!draftProject) return () => { cancelled = true }
+    void fetchProjectSettings(draftProject.id)
+      .then((settings) => { if (!cancelled) setEffectiveSettings(settings.effective) })
+      .catch((cause) => {
+        if (cancelled) return
+        console.error('[automations] failed to load selected Project settings', cause)
+        setError(cause instanceof Error ? cause.message : String(cause))
+      })
+    return () => { cancelled = true }
+  }, [draftProject?.id])
 
-  useEffect(() => { void load() }, [load])
+  const catalogActiveRuns = useMemo(() => {
+    return tasks.flatMap((task) => (task.recent_runs || [])
+      .filter((run) => run.status === 'running')
+      .map((run) => ({ task_id: run.task_id, run })))
+  }, [tasks])
+  const selectedActiveRun = catalogActiveRuns.find((active) => {
+    const task = findAutomationTaskForRun(tasks, active.run)
+    return task ? automationTaskKey(task) === activeId : false
+  })?.run
+  const running = Boolean(selectedActiveRun)
+  const activeRunId = selectedActiveRun?.id || ''
 
   useEffect(() => {
-    if (running || tasks.length === 0) return
-    let cancelled = false
-    void (async () => {
-      try {
-        const activeRuns = await getActiveAutomationRuns()
-        if (cancelled || activeRuns.length === 0) return
-        const active = activeRuns[0]
-        const task = tasks.find(item => item.id === active.task_id)
-        if (task) {
-          setScopeFilter(task.scope)
-          setActiveId(task.id || '')
-          setDraft(cloneTask(task))
-        }
-        setPanelView('run')
-        await resumeAutomationRun(active.run, t('automations.run.attached', { name: task?.name || active.run.task_id }))
-      } catch (e) {
-        if (!cancelled) console.error('resume automation run failed', e)
-      }
-    })()
-    return () => { cancelled = true }
-  }, [resumeAutomationRun, running, t, tasks])
+    mountedRef.current = true
+    void load()
+    return () => {
+      mountedRef.current = false
+      loadSequenceRef.current += 1
+    }
+  }, [load])
 
-  const filteredTasks = useMemo(() => tasks.filter((task) => task.scope === scopeFilter), [scopeFilter, tasks])
+  useEffect(() => {
+    const receiveNavigation = (event: Event) => {
+      const queued = consumeAutomationNavigation()
+      const detail = (event as CustomEvent<AutomationNavigationTarget>).detail
+      setNavigationTarget(queued || detail)
+    }
+    window.addEventListener(AUTOMATION_NAVIGATION_EVENT, receiveNavigation)
+    const queued = consumeAutomationNavigation()
+    if (queued) setNavigationTarget(queued)
+    return () => window.removeEventListener(AUTOMATION_NAVIGATION_EVENT, receiveNavigation)
+  }, [])
+
+  useEffect(() => {
+    const reloadChangedAutomation = (event: Event) => {
+      const detail = (event as CustomEvent<WorkspaceChangeEvent>).detail
+      if (!projects.some((project) => isProjectChangeForProject(detail, project.id))) return
+      const paths = workspaceChangePaths(detail)
+      if (paths.length > 0 && !paths.some(isAutomationTaskFile)) return
+      void load()
+    }
+    window.addEventListener('nova:workspace-change', reloadChangedAutomation)
+    return () => window.removeEventListener('nova:workspace-change', reloadChangedAutomation)
+  }, [load, projects])
+
   const unreadInboxCount = useMemo(() => inboxItems.filter((item) => !item.read_at && item.status === 'pending').length, [inboxItems])
-  const modelProfileOptions = useMemo(() => buildModelProfileOptions(effectiveSettings, draft.model_profile_id, t), [draft.model_profile_id, effectiveSettings, t])
-  const inheritedAutomationProfile = useMemo(() => inheritedAutomationProfileLabel(effectiveSettings, t), [effectiveSettings, t])
+  const modelProfileOptions = useMemo(() => buildAutomationModelProfileOptions(effectiveSettings, draft.model_profile_id, t), [draft.model_profile_id, effectiveSettings, t])
+  const inheritedAutomationProfile = useMemo(
+    () => inheritedAutomationModelProfileLabel(effectiveSettings, draftProject?.type || projectType, t),
+    [draftProject?.type, effectiveSettings, projectType, t],
+  )
 
-  const selectTask = (task: AutomationTask) => {
-    setActiveId(task.id || '')
-    setDraft(cloneTask(task))
+  const automationAutosave = useAutomationAutosave({
+    activeId,
+    creating,
+    draft,
+    tasks,
+    fallbackTarget: draft.target?.kind ? draft.target : unassignedProjectTarget,
+    onSaved: (saved, _submitted, submittedIsCurrent) => {
+      setTasks((current) => upsertAutomationTask(current, saved))
+      taskBaselineRef.current = cloneAutomationTask(saved, unassignedProjectTarget)
+      if (submittedIsCurrent) {
+        const nextDraft = cloneAutomationTask(saved, unassignedProjectTarget)
+        draftRef.current = nextDraft
+        setDraft(nextDraft)
+        draftDirtyRef.current = false
+      }
+    },
+    onError: (cause) => {
+      console.error('[automations] failed to autosave task configuration', cause)
+      setError(cause instanceof Error ? cause.message : String(cause))
+    },
+  })
+  const flushAutomationAutosave = useCallback(() => {
+    setError(null)
+    return automationAutosave.flush()
+  }, [automationAutosave.flush])
+
+  const selectTask = async (task: AutomationTask) => {
+    if (!(await flushAutomationAutosave())) return
+    const key = automationTaskKey(task)
+    activeIdRef.current = key
+    setActiveId(key)
+    const nextDraft = cloneAutomationTask(task, unassignedProjectTarget)
+    taskBaselineRef.current = nextDraft
+    draftRef.current = nextDraft
+    setDraft(nextDraft)
+    draftDirtyRef.current = false
+    setCreating(false)
     setPanelView('config')
   }
 
-  const createNew = (scope: 'workspace' | 'user') => {
+  const createNew = async (owner?: AutomationProjectOption) => {
+    if (!(await flushAutomationAutosave())) return
+    const project = owner?.status === 'available' ? owner : defaultAutomationProject(projects, projectId)
+    const target = project ? automationProjectTarget(project) : unassignedProjectTarget
+    activeIdRef.current = ''
     setActiveId('')
-    setScopeFilter(scope)
-    setDraft(newTask(scope))
+    taskBaselineRef.current = null
+    const nextDraft = newAutomationTask(target, t('automations.defaultName'))
+    draftRef.current = nextDraft
+    setDraft(nextDraft)
+    draftDirtyRef.current = true
+    setCreating(true)
     setPanelView('config')
   }
 
-  const switchScope = (scope: 'workspace' | 'user') => {
-    setScopeFilter(scope)
-    const first = tasks.find((task) => task.scope === scope)
-    if (first) {
-      setActiveId(first.id || '')
-      setDraft(cloneTask(first))
-      setPanelView('config')
+  const setDraftTemplate = (templateId: string | null) => {
+    if (!creating) return
+    const target = draftRef.current.target?.kind ? draftRef.current.target : unassignedProjectTarget
+    const template = templateId ? templates.find((candidate) => candidate.id === templateId) : null
+    if (templateId && !template) return
+    const nextDraft = template
+      ? newAutomationTaskFromTemplate(template, target)
+      : newAutomationTask(target, t('automations.defaultName'))
+    draftRef.current = nextDraft
+    setDraft(nextDraft)
+    draftDirtyRef.current = true
+  }
+
+  const createDraft = async () => {
+    if (!creating) return
+    const submitted = draftRef.current
+    if (!automationTaskProjectID(submitted)) {
+      setError(t('automations.project.required'))
       return
     }
-    setActiveId('')
-    setDraft(newTask(scope))
-    setPanelView('config')
-  }
-
-  const save = async () => {
     setSaving(true)
     setError(null)
     try {
-      const saved = activeId ? await updateAutomation(activeId, draft) : await createAutomation(draft)
-      setActiveId(saved.id || '')
-      setDraft(cloneTask(saved))
-      setTasks((current) => upsertTask(current, saved))
+      const saved = await createAutomation(submitted)
+      const normalized = normalizeAutomationTaskShape(saved, unassignedProjectTarget)
+      const key = automationTaskKey(normalized)
+      activeIdRef.current = key
+      setActiveId(key)
+      const canonical = cloneAutomationTask(normalized, unassignedProjectTarget)
+      taskBaselineRef.current = canonical
+      const latestDraft = draftRef.current
+      const nextDraft = latestDraft === submitted
+        ? canonical
+        : cloneAutomationTask(rebaseJSONValue(submitted, latestDraft, canonical), unassignedProjectTarget)
+      draftRef.current = nextDraft
+      setDraft(nextDraft)
+      draftDirtyRef.current = automationTaskDraftSignature(nextDraft) !== automationTaskDraftSignature(canonical)
+      setTasks((current) => upsertAutomationTask(current, normalized))
+      setCreating(false)
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -157,9 +372,10 @@ export function AutomationsView({ workspace, onClose }: { workspace: string; onC
     }
   }
 
-  const requestRemove = () => {
+  const requestRemove = async () => {
     if (!activeId) return
-    setDeleteTarget({ id: activeId, name: draft.name || activeId, scope: draft.scope })
+    if (!(await flushAutomationAutosave())) return
+    setDeleteTarget({ id: activeId, name: draft.name || activeId })
   }
 
   const confirmRemove = async () => {
@@ -168,14 +384,21 @@ export function AutomationsView({ workspace, onClose }: { workspace: string; onC
     setError(null)
     try {
       await deleteAutomation(deleteTarget.id)
-      const next = tasks.filter((task) => task.id !== deleteTarget.id)
+      const next = tasks.filter((task) => automationTaskKey(task) !== deleteTarget.id)
       setTasks(next)
-      const fallback = next.find((task) => task.scope === deleteTarget.scope) ?? next.find((task) => task.scope === scopeFilter)
-      setActiveId(fallback?.id || '')
-      setDraft(fallback ? cloneTask(fallback) : newTask(scopeFilter))
-      setDeleteTarget(null)
+      const fallback = next[0]
+      const fallbackID = fallback ? automationTaskKey(fallback) : ''
+      activeIdRef.current = fallbackID
+      setActiveId(fallbackID)
+      const nextDraft = fallback ? cloneAutomationTask(fallback, unassignedProjectTarget) : newAutomationTask(unassignedProjectTarget, t('automations.defaultName'))
+      taskBaselineRef.current = fallback ? nextDraft : null
+      draftRef.current = nextDraft
+      setDraft(nextDraft)
+      draftDirtyRef.current = false
+      setCreating(false)
     } catch (e) {
       setError((e as Error).message)
+      throw e
     } finally {
       setSaving(false)
     }
@@ -183,23 +406,39 @@ export function AutomationsView({ workspace, onClose }: { workspace: string; onC
 
   const runNow = async () => {
     if (!activeId) return
+    if (!(await flushAutomationAutosave())) return
     setError(null)
-    setPanelView('run')
+    setSaving(true)
     try {
-      await runStream.start(activeId, buildRunUserMessage(draft, t))
+      const run = await startAutomationRun(activeId, createAgentCommandID())
+      if (!run.project_id || !run.session_id) {
+        throw new Error(t('automations.run.missingConversation'))
+      }
+      requestAgentChatSessionNavigation({ projectId: run.project_id, sessionId: run.session_id })
+      onOpenAgentChat?.()
+      void load()
     } catch (e) {
       setError((e as Error).message)
+    } finally {
+      setSaving(false)
     }
   }
 
   const checkTriggers = async () => {
     if (!activeId) return
+    if (!(await flushAutomationAutosave())) return
     setSaving(true)
     setError(null)
     try {
       await checkAutomation(activeId)
-      const inbox = await getAutomationInbox()
-      setInboxItems(inbox)
+      const target = draftRef.current.target
+      if (!target?.kind) throw new Error(t('automations.project.required'))
+      const inbox = await getAutomationInbox(target)
+      const targetProjectID = target.kind === 'workspace' ? target.project_id : ''
+      setInboxItems((current) => [
+        ...current.filter((item) => !targetProjectID || item.project_id !== targetProjectID),
+        ...inbox,
+      ])
       setPanelView('inbox')
     } catch (e) {
       setError((e as Error).message)
@@ -208,25 +447,46 @@ export function AutomationsView({ workspace, onClose }: { workspace: string; onC
     }
   }
 
-  const openRun = async (run: AutomationRunRecord) => {
+  const openRun = useCallback((run: AutomationRunRecord) => {
     setError(null)
-    setPanelView('run')
-    try {
-      await runStream.loadHistory(run)
-    } catch (e) {
-      setError((e as Error).message)
+    if (!run.project_id || !run.session_id) {
+      setError(t('automations.run.missingConversation'))
+      return
     }
-  }
+    requestAgentChatSessionNavigation({ projectId: run.project_id, sessionId: run.session_id })
+    onOpenAgentChat?.()
+  }, [onOpenAgentChat, t])
 
-  const sendRunMessage = async (message: string) => {
-    setError(null)
-    setPanelView('run')
-    try {
-      await runStream.send(message)
-    } catch (e) {
-      setError((e as Error).message)
-    }
-  }
+  useEffect(() => {
+    if (!navigationTarget || tasks.length === 0) return
+    let cancelled = false
+    void (async () => {
+      if (!await flushAutomationAutosave() || cancelled) return
+      const task = tasks.find((candidate) => automationTaskKey(candidate) === navigationTarget.taskId)
+        || findAutomationTaskByTarget(tasks, navigationTarget.taskId, navigationTarget.workspace, navigationTarget.projectId)
+      if (!task || cancelled) return
+      const key = automationTaskKey(task)
+      activeIdRef.current = key
+      setActiveId(key)
+      const nextDraft = cloneAutomationTask(task, unassignedProjectTarget)
+      taskBaselineRef.current = nextDraft
+      draftRef.current = nextDraft
+      setDraft(nextDraft)
+      draftDirtyRef.current = false
+      setCreating(false)
+      if (navigationTarget.inboxId) {
+        setPanelView('inbox')
+      } else if (navigationTarget.runId) {
+        const run = task.recent_runs?.find((candidate) => candidate.id === navigationTarget.runId)
+        if (run) openRun(run)
+        else setPanelView('config')
+      } else {
+        setPanelView('config')
+      }
+      setNavigationTarget(null)
+    })()
+    return () => { cancelled = true }
+  }, [flushAutomationAutosave, navigationTarget, openRun, tasks, unassignedProjectTarget])
 
   const confirmInboxItem = async (item: AutomationInboxItem) => {
     setError(null)
@@ -234,9 +494,8 @@ export function AutomationsView({ workspace, onClose }: { workspace: string; onC
       const result = await confirmAutomationInboxItem(item.id)
       setInboxItems((current) => current.map((candidate) => candidate.id === result.item.id ? result.item : candidate))
       if (result.run) {
-        const task = tasks.find(candidate => candidate.id === result.run?.task_id)
-        setPanelView('run')
-        await resumeAutomationRun(result.run, t('automations.run.attached', { name: task?.name || result.run.task_id }))
+        openRun(result.run)
+        void load()
       }
     } catch (e) {
       setError((e as Error).message)
@@ -263,80 +522,92 @@ export function AutomationsView({ workspace, onClose }: { workspace: string; onC
     }
   }
 
-  const setDraftField = (patch: Partial<AutomationTask>) => setDraft((current) => ({ ...current, ...patch }))
-  const setDraftTriggers = (triggers: AutomationTriggerDefinition[]) => {
+  const setDraftField = (patch: Partial<AutomationTask>) => {
+    draftDirtyRef.current = true
     setDraft((current) => {
-      const schedule = triggers.find((trigger) => trigger.type === 'schedule')?.schedule ?? current.schedule
-      return { ...current, schedule, triggers }
+      const next = { ...current, ...patch }
+      draftRef.current = next
+      return next
     })
   }
+  const setDraftTriggers = (triggers: AutomationTriggerDefinition[]) => {
+    draftDirtyRef.current = true
+    setDraft((current) => {
+      const schedule = triggers.find((trigger) => trigger.type === 'schedule')?.schedule ?? current.schedule
+      const next = { ...current, schedule, triggers }
+      draftRef.current = next
+      return next
+    })
+  }
+  const setDraftProject = (nextProjectId: string) => {
+    if (!creating) return
+    const project = projects.find((candidate) => candidate.id === nextProjectId && candidate.status === 'available')
+    if (!project) return
+    setDraftField({ scope: 'workspace', target: automationProjectTarget(project) })
+  }
+  const hasEditableDraft = Boolean(activeId) || creating
   const taskListPanel = (
-    <div className="h-full min-h-0 overflow-y-auto bg-[var(--nova-surface-2)] p-3">
-      <div className="mb-3 grid grid-cols-2 gap-2">
-        <button type="button" onClick={() => setPanelView('agent')} className={`nova-nav-item inline-flex h-8 items-center justify-center gap-1.5 rounded-[var(--nova-radius)] border border-[var(--nova-border)] px-2 ${panelView === 'agent' ? 'is-active' : 'bg-[var(--nova-surface)]'}`}>
-          <Bot className="h-3.5 w-3.5" />
-          <span className="min-w-0 truncate">{t('automations.view.agent')}</span>
-        </button>
-        <button type="button" onClick={() => createNew(scopeFilter)} className="nova-nav-item inline-flex h-8 items-center justify-center gap-1.5 rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-active)] px-2">
-          <Plus className="h-3.5 w-3.5" />
-          <span className="min-w-0 truncate">{t('automations.newTask')}</span>
-        </button>
-      </div>
-      <div className="space-y-1">
-        {filteredTasks.length === 0 ? (
-          <div className="px-2 py-8 text-center text-[var(--nova-text-faint)]">{t('automations.empty')}</div>
-        ) : filteredTasks.map((task) => (
-          <button key={task.id} type="button" onClick={() => selectTask(task)} className={`nova-nav-item flex w-full items-start gap-2 rounded-[var(--nova-radius)] px-2.5 py-2 text-left ${activeId === task.id ? 'is-active' : ''}`}>
-            <FileText className="mt-0.5 h-4 w-4 shrink-0 text-[var(--nova-text-muted)]" />
-            <span className="min-w-0 flex-1">
-              <span className="block truncate font-medium text-[var(--nova-text)]">{task.name}</span>
-              <span className="mt-0.5 block truncate text-[11px] text-[var(--nova-text-faint)]">{automationTaskSubtitle(task, t)} · {task.enabled ? t('automations.enabled') : t('automations.disabled')}</span>
-            </span>
-          </button>
-        ))}
-      </div>
-    </div>
+    <AutomationTaskCatalog
+      tasks={tasks}
+      projects={projects}
+      activeRuns={catalogActiveRuns}
+      activeId={activeId}
+      agentActive={panelView === 'agent'}
+      onSelect={selectTask}
+      onCreate={() => void createNew()}
+      onCreateForProject={(project) => void createNew(project)}
+      onOpenAgent={() => setPanelView('agent')}
+    />
   )
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col bg-[var(--nova-bg)] text-[var(--nova-text)]">
-      <div className="nova-topbar flex h-10 shrink-0 flex-nowrap max-md:flex-wrap items-center gap-2 overflow-x-auto max-md:overflow-x-hidden border-b px-3 py-1 text-xs sm:px-4">
-        <Clock3 className="h-3.5 w-3.5 text-[var(--nova-text-muted)]" />
-        <span className="shrink-0 font-medium">{t('automations.title')}</span>
-        <div className="flex shrink-0 gap-1 border-l border-[var(--nova-border)] pl-2 sm:ml-3 sm:pl-3">
-          {(['workspace', 'user'] as const).map((scope) => (
-            <button key={scope} type="button" onClick={() => switchScope(scope)} className={`${tabCls} ${scopeFilter === scope ? 'is-active' : 'bg-[var(--nova-surface-2)] text-[var(--nova-text-muted)]'}`}>
-              {scope === 'workspace' ? t('automations.scope.workspace') : t('automations.scope.user')}
-            </button>
-          ))}
-        </div>
-        <button type="button" onClick={checkTriggers} disabled={!activeId || running || saving} className="nova-nav-item ml-auto inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-surface-2)] px-2.5 py-1 text-[var(--nova-text-muted)] disabled:opacity-50 sm:px-3">
-          <RefreshCw className="h-3.5 w-3.5" />
-          {t('automations.checkTriggers')}
-        </button>
-        <button type="button" onClick={runNow} disabled={!activeId || running || saving} className="nova-nav-item inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-active)] px-2.5 py-1 text-[var(--nova-text)] disabled:opacity-50 sm:px-3">
-          <Play className="h-3.5 w-3.5" />
-          {running ? t('automations.running') : t('automations.runNow')}
-        </button>
-        {running && (
-          <button type="button" onClick={runStream.stop} className="nova-nav-item inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-surface-2)] px-3 py-1 text-[var(--nova-text-muted)]">
-            <Square className="h-3.5 w-3.5" />
-            {t('automations.stopRun')}
-          </button>
-        )}
-        <button type="button" onClick={save} disabled={saving || running} className="nova-nav-item inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-active)] px-3 py-1 text-[var(--nova-text)] disabled:opacity-50">
-          {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-          {t('common.save')}
-        </button>
-        {onClose && (
-          <button type="button" onClick={onClose} className="nova-nav-item flex h-8 w-8 shrink-0 items-center justify-center rounded p-1" aria-label={t('automations.close')} title={t('automations.close')}>
-            <X className="h-3.5 w-3.5" />
-          </button>
-        )}
-      </div>
-
-      {error && <InlineErrorNotice className="mx-3 mt-2" message={error} title={t('automations.error')} />}
-
+    <FeaturePageShell
+      icon={Clock3}
+      title={t('automations.title')}
+      leadingContent={(
+        <SidebarVisibilityToggle
+          visible={sidebarVisible}
+          onToggle={() => setSidebarVisible((visible) => !visible)}
+        />
+      )}
+      subtitle={t('automations.summary', { tasks: tasks.length, running: catalogActiveRuns.length })}
+      error={error}
+      errorTitle={t('automations.error')}
+      onClose={onClose ? () => {
+        void flushAutomationAutosave().then((flushed) => { if (flushed) onClose() })
+      } : undefined}
+      closeLabel={t('automations.close')}
+      onSaveShortcut={activeId && !creating ? flushAutomationAutosave : undefined}
+      className="bg-[var(--nova-bg)] text-[var(--nova-text)]"
+      actions={(
+        <>
+          {activeId && !creating ? (
+            <AutosaveStatusIndicator
+              status={automationAutosave.status}
+              error={automationAutosave.error}
+              onRetry={flushAutomationAutosave}
+            />
+          ) : null}
+          <Button type="button" size="sm" variant="outline" onClick={checkTriggers} disabled={!activeId || running || saving} className="nova-nav-item border-[var(--nova-border)] bg-[var(--nova-surface-2)] text-[var(--nova-text-muted)]" aria-label={t('automations.checkTriggers')}>
+            <RefreshCw data-icon="inline-start" />
+            <span className="hidden sm:inline">{t('automations.checkTriggers')}</span>
+          </Button>
+          <Button type="button" size="sm" variant="secondary" onClick={runNow} disabled={!activeId || running || saving} className="nova-nav-item border border-[var(--nova-border)] bg-[var(--nova-active)]" aria-label={running ? t('automations.running') : t('automations.runNow')}>
+            <Play data-icon="inline-start" />
+            <span className="hidden sm:inline">{running ? t('automations.running') : t('automations.runNow')}</span>
+          </Button>
+          {creating ? (
+            <Button type="button" size="sm" variant="secondary" onClick={createDraft} disabled={saving || running} className="nova-nav-item border border-[var(--nova-border)] bg-[var(--nova-active)]" aria-label={t('common.create')}>
+              {saving ? <Loader2 data-icon="inline-start" className="animate-spin" /> : <Plus data-icon="inline-start" />}
+              <span className="hidden sm:inline">{saving ? t('common.creating') : t('common.create')}</span>
+            </Button>
+          ) : null}
+        </>
+      )}
+    >
+      {!initialLoadComplete ? (
+        <LoadingState label={t('common.loading')} className="min-h-0 flex-1" />
+      ) : (
       <AdaptiveSurface
         left={{
           id: 'automation-tasks',
@@ -345,18 +616,29 @@ export function AutomationsView({ workspace, onClose }: { workspace: string; onC
           icon: <Clock3 className="h-4 w-4" />,
           content: taskListPanel,
           desktopClassName: 'min-h-0 border-r border-[var(--nova-border)]',
+          desktopVisible: sidebarVisible,
           mobileClassName: 'w-[min(90vw,360px)]',
         }}
         className="flex-1 text-xs"
         mainClassName="min-h-0 min-w-0"
-        desktopGridClassName="grid-cols-[18rem_minmax(0,1fr)]"
+        leftResize={{
+          layoutKey: 'nova-automations-task-list-layout',
+          label: t('layout.resize.sidebar'),
+          defaultSize: '288px',
+          minSize: '220px',
+          maxSize: '40%',
+        }}
       >
-        {({ openLeft }) => (
+        {({ isMobile, openLeft }) => (
           <main className="flex h-full min-h-0 flex-col">
             <div className="flex h-10 shrink-0 items-center gap-2 overflow-x-auto border-b border-[var(--nova-border)] bg-[var(--nova-surface)] px-3 sm:px-4">
-              <button type="button" className="nova-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--nova-radius)] border border-[var(--nova-border)] text-[var(--nova-text-muted)] hover:text-[var(--nova-text)] md:hidden" aria-label={t('workbench.mobile.openSidePanel', { label: t('automations.title') })} onClick={openLeft}>
-                <PanelLeft className="h-4 w-4" />
-              </button>
+              {isMobile && (
+                <MobilePaneTrigger
+                  side="left"
+                  label={t('workbench.mobile.openSidePanel', { label: t('automations.title') })}
+                  onClick={openLeft}
+                />
+              )}
               <div className="flex h-7 items-center rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-surface-2)] p-0.5">
                 <button
                   type="button"
@@ -375,117 +657,44 @@ export function AutomationsView({ workspace, onClose }: { workspace: string; onC
                   {t('automations.view.inbox')}
                   {unreadInboxCount > 0 && <span className="rounded-full bg-[var(--nova-danger-border)] px-1.5 text-[10px] text-white">{unreadInboxCount}</span>}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setPanelView('run')}
-                  className={`inline-flex items-center gap-1.5 rounded-[6px] px-2 py-0.5 text-[11px] transition-colors ${panelView === 'run' ? 'bg-[var(--nova-active)] text-[var(--nova-text)]' : 'text-[var(--nova-text-faint)] hover:text-[var(--nova-text-muted)]'}`}
-                >
-                  <MessageSquareText className="h-3.5 w-3.5" />
-                  {t('automations.view.run')}
-                </button>
               </div>
               <div className="min-w-0 flex-1" />
-              {runStream.activeRun && (
+              {selectedActiveRun && (
                 <span className="truncate rounded border border-[var(--nova-border)] bg-[var(--nova-surface-2)] px-2 py-0.5 font-mono text-[11px] text-[var(--nova-text-faint)]">
-                  {runStream.activeRun.status || (running ? 'running' : '')} · {runStream.activeRun.id}
+                  {selectedActiveRun.status} · {selectedActiveRun.id}
                 </span>
               )}
             </div>
 
-            {panelView === 'config' ? (
-              <div className="min-h-0 flex-1 overflow-y-auto">
-                <div className="mx-auto flex w-full min-w-0 max-w-5xl flex-col gap-5 px-4 py-5 sm:px-6">
-                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--nova-border)] pb-4">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium text-[var(--nova-text)]">{draft.name || t('automations.newTask')}</div>
-                      <div className="mt-1 truncate text-[11px] text-[var(--nova-text-faint)]">
-                        {draft.scope === 'workspace' ? t('automations.scope.workspace') : t('automations.scope.user')} · {draft.enabled ? t('automations.enabled') : t('automations.disabled')}
-                      </div>
-                    </div>
-                    {activeId && (
-                      <button
-                        type="button"
-                        onClick={requestRemove}
-                        disabled={saving || running}
-                        className="nova-nav-item inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-surface-2)] px-3 text-[var(--nova-danger)] disabled:cursor-not-allowed disabled:opacity-45"
-                        aria-label={t('automations.deleteTask')}
-                        title={t('automations.deleteTask')}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                        {t('automations.deleteTask')}
-                      </button>
-                    )}
-                  </div>
-                <section className="grid gap-3 border-b border-[var(--nova-border)] pb-5 md:grid-cols-2">
-                  <Field label={t('automations.field.name')}>
-                    <input value={draft.name} onChange={(e) => setDraftField({ name: e.target.value })} className={fieldCls} />
-                  </Field>
-                  <Field label={t('automations.field.enabled')}>
-                    <select value={String(draft.enabled)} onChange={(e) => setDraftField({ enabled: e.target.value === 'true' })} className={fieldCls}>
-                      <option value="true">{t('automations.enabled')}</option>
-                      <option value="false">{t('automations.disabled')}</option>
-                    </select>
-                  </Field>
-                  <Field label={t('automations.field.scope')}>
-                    <select value={draft.scope} disabled={Boolean(activeId)} onChange={(e) => setDraftField({ scope: e.target.value as AutomationTask['scope'] })} className={fieldCls}>
-                      <option value="workspace">{t('automations.scope.workspace')}</option>
-                      <option value="user">{t('automations.scope.user')}</option>
-                    </select>
-                  </Field>
-                  <Field label={t('automations.field.modelProfile')}>
-                    <select value={draft.model_profile_id || ''} onChange={(e) => setDraftField({ model_profile_id: e.target.value })} className={fieldCls}>
-                      <option value="">{t('automations.model.inherit', { label: inheritedAutomationProfile })}</option>
-                      {modelProfileOptions.map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}
-                    </select>
-                  </Field>
-                  <div className="md:col-span-2">
-                    <Field label={t('automations.field.prompt')}>
-                      <Textarea autoResize value={draft.prompt} onChange={(e) => setDraftField({ prompt: e.target.value })} placeholder={t('automations.prompt.placeholder')} className={`${fieldCls} min-h-32 resize-y leading-5 shadow-none focus-visible:ring-0`} />
-                    </Field>
-                  </div>
-                </section>
-
-                <section className="grid gap-3 border-b border-[var(--nova-border)] pb-5 md:grid-cols-2">
-                  <Field label={t('automations.field.writeMode')}>
-                    <select value={draft.write_mode} onChange={(e) => setDraftField(nextWriteModePatch(draft, e.target.value as AutomationTask['write_mode']))} className={fieldCls}>
-                      <option value="read_only">{t('automations.writeMode.readOnly')}</option>
-                      <option value="confirm_write">{t('automations.writeMode.confirmWrite')}</option>
-                      <option value="auto_write">{t('automations.writeMode.autoWrite')}</option>
-                    </select>
-                  </Field>
-                  <Field label={t('automations.field.writeScope')}>
-                    <select value={draft.write_scope} disabled={draft.write_mode === 'read_only'} onChange={(e) => setDraftField(nextWriteScopePatch(draft, e.target.value as AutomationTask['write_scope']))} className={fieldCls}>
-                      <option value="none">{t('automations.writeScope.none')}</option>
-                      <option value="lore">{t('automations.writeScope.lore')}</option>
-                      <option value="file">{t('automations.writeScope.file')}</option>
-                      <option value="lore_and_file">{t('automations.writeScope.loreFile')}</option>
-                    </select>
-                  </Field>
-                  <Field label={t('automations.field.outputPolicy')}>
-                    <select value={draft.output_policy} onChange={(e) => setDraftField({ output_policy: e.target.value as AutomationTask['output_policy'] })} className={fieldCls}>
-                      <option value="run_record_only">{t('automations.output.record')}</option>
-                      <option value="optional_file">{t('automations.output.file')}</option>
-                    </select>
-                  </Field>
-                  <div className="md:col-span-2">
-                    <Field label={t('automations.field.outputPath')}>
-                      <input value={draft.output_path} onChange={(e) => setDraftField({ output_path: e.target.value })} placeholder="reports/automation-review.md" className={fieldCls} />
-                    </Field>
-                  </div>
-                </section>
-
-                <section className="space-y-3 border-b border-[var(--nova-border)] pb-5">
-                  <SectionTitle title={t('automations.section.triggers')} />
-                  <TriggerEditor task={draft} onChange={setDraftTriggers} />
-                </section>
-
-                <section className="space-y-3 pb-5">
-                  <SectionTitle title={t('automations.section.runs')} />
-                  <RunList task={draft} activeRunId={runStream.activeRun?.id || ''} onOpenRun={openRun} />
-                </section>
-              </div>
-            </div>
-          ) : panelView === 'inbox' ? (
+            {panelView === 'config' ? hasEditableDraft ? (
+              <AutomationConfigPanel
+                activeId={activeId}
+                activeRunId={activeRunId}
+                draft={draft}
+                inheritedModelProfile={inheritedAutomationProfile}
+                modelProfileOptions={modelProfileOptions}
+                projects={projects}
+                templates={templates}
+                creating={creating}
+                running={running}
+                saving={saving}
+                onChange={setDraftField}
+                onOpenRun={openRun}
+                onProjectChange={setDraftProject}
+                onTemplateChange={setDraftTemplate}
+                onRemove={() => void requestRemove()}
+                onTriggersChange={setDraftTriggers}
+              />
+            ) : (
+              <EmptyState
+                variant="page"
+                icon={Plus}
+                title={t('automations.empty.title')}
+                description={t('automations.empty.description')}
+                action={{ label: t('automations.newTask'), onClick: () => void createNew() }}
+                className="min-h-0 flex-1 overflow-y-auto px-4 py-10"
+              />
+            ) : panelView === 'inbox' ? (
             <InboxPanel
               items={inboxItems}
               tasks={tasks}
@@ -497,46 +706,17 @@ export function AutomationsView({ workspace, onClose }: { workspace: string; onC
                 if (run) void openRun(run)
               }}
             />
-          ) : panelView === 'run' ? (
-            <section className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                <MessageList
-                  messages={runStream.messages}
-                  isStreaming={runStream.isStreaming}
-                  activityContent={runStream.activityContent}
-                  scrollResetKey={runStream.activeRun?.id || activeId || 'automation'}
-                  collapseTraceBeforeAssistant
-                  bottomPaddingClassName="pb-36"
-                  bottomPaddingPx={runMessageListBottomPadding}
-                />
-              </div>
-              {runStream.activeRun ? (
-                <InputArea
-                  onSend={sendRunMessage}
-                  onStop={runStream.isStreaming ? runStream.stop : undefined}
-                  disabled={runStream.isStreaming}
-                  commandScope="skills"
-                  skills={skillCommands}
-                  agentKey="automation"
-                  workspace={workspace}
-                  floating
-                  onHeightChange={setRunInputAreaHeight}
-                />
-              ) : (
-                <div className="border-t border-[var(--nova-border)] px-4 py-3 text-[11px] text-[var(--nova-text-faint)]">
-                  {t('automations.run.empty')}
-                </div>
-              )}
-            </section>
           ) : (
             <ConfigManagerChat
-              workspace={workspace}
+              projectId={draftProject?.id || projectId}
               origin="automation"
               resourceId={activeId}
               context={{
                 active_automation_id: activeId,
                 active_automation_name: draft.name || '',
-                automation_scope: draft.scope || scopeFilter,
+                automation_scope: draft.scope,
+                automation_target_kind: draft.target?.kind || '',
+                automation_target_workspace: draft.target?.workspace || '',
               }}
               onMutated={() => void load()}
             />
@@ -544,187 +724,21 @@ export function AutomationsView({ workspace, onClose }: { workspace: string; onC
           </main>
         )}
       </AdaptiveSurface>
-      <AlertDialog open={Boolean(deleteTarget)} onOpenChange={(open) => {
-        if (!open && !saving) setDeleteTarget(null)
-      }}>
-        <AlertDialogContent className="border-[var(--nova-border)] bg-[var(--nova-surface)] text-[var(--nova-text)]">
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t('automations.deleteTask.title')}</AlertDialogTitle>
-            <AlertDialogDescription className="text-[var(--nova-text-muted)]">
-              {t('automations.deleteTask.confirm', { name: deleteTarget?.name || '' })}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={saving}>{t('common.cancel')}</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-[var(--nova-danger-bg)] text-[var(--nova-danger)] hover:bg-[var(--nova-danger-bg)]"
-              disabled={saving || !deleteTarget}
-              onClick={(event) => {
-                event.preventDefault()
-                void confirmRemove()
-              }}
-            >
-              {t('automations.deleteTask')}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </div>
+      )}
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}
+        title={t('automations.deleteTask.title')}
+        description={t('automations.deleteTask.confirm', { name: deleteTarget?.name || '' })}
+        confirmLabel={t('automations.deleteTask')}
+        tone="danger"
+        onConfirm={confirmRemove}
+      />
+    </FeaturePageShell>
   )
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return <label className="flex min-w-0 flex-col gap-1.5 text-xs"><span className="text-[var(--nova-text-muted)]">{label}</span>{children}</label>
-}
-
-function SectionTitle({ title }: { title: string }) {
-  return <div className="text-xs font-medium text-[var(--nova-text)]">{title}</div>
-}
-
-function RunList({ task, activeRunId, onOpenRun }: { task: AutomationTask; activeRunId: string; onOpenRun: (run: AutomationRunRecord) => void }) {
-  const { t } = useTranslation()
-  const runs = task.recent_runs || []
-  if (runs.length === 0) return <div className="rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-surface)] px-3 py-8 text-center text-[var(--nova-text-faint)]">{t('automations.runs.empty')}</div>
-  return (
-    <div className="space-y-2">
-      {runs.slice(0, 5).map((run) => (
-        <div key={run.id} className="rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-surface)] px-3 py-2">
-          <div className="flex items-center gap-2">
-            <span className="font-medium">{run.status}</span>
-            <span className="text-[11px] text-[var(--nova-text-faint)]">{new Date(run.started_at).toLocaleString()}</span>
-            {run.output_path && <span className="ml-auto truncate text-[11px] text-[var(--nova-text-faint)]">{run.output_path}</span>}
-            {run.session_id && (
-              <button
-                type="button"
-                onClick={() => onOpenRun(run)}
-                className={`nova-nav-item ml-auto rounded-[var(--nova-radius)] px-2 py-0.5 text-[11px] ${activeRunId === run.id ? 'is-active' : 'text-[var(--nova-text-muted)]'}`}
-              >
-                {t('automations.runs.viewTimeline')}
-              </button>
-            )}
-          </div>
-          <div className="mt-1 line-clamp-3 whitespace-pre-wrap text-[11px] leading-5 text-[var(--nova-text-muted)]">{run.error || run.summary}</div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function newTask(scope: 'workspace' | 'user'): AutomationTask {
-  const schedule = { kind: 'manual', hour: 9, minute: 0, weekday: 1, day_of_month: 1, every_hours: 6 } satisfies AutomationTask['schedule']
-  return {
-    scope,
-    enabled: false,
-    name: scope === 'workspace' ? 'Workspace automation' : 'User automation',
-    template: 'custom_prompt',
-    prompt: '',
-    model_profile_id: '',
-    schedule,
-    triggers: [defaultScheduleTrigger(schedule)],
-    default_action_policy: 'auto_run',
-    write_policy: 'read_only',
-    write_mode: 'read_only',
-    write_scope: 'none',
-    output_policy: 'run_record_only',
-    output_path: '',
-    recent_runs: [],
-  }
-}
-
-function cloneTask(task: AutomationTask): AutomationTask {
-  return normalizeTaskShape(JSON.parse(JSON.stringify(task)) as AutomationTask)
-}
-
-function normalizeTaskShape(task: AutomationTask): AutomationTask {
-  if (task.write_mode && task.write_scope) {
-    return { ...task, default_action_policy: actionPolicyForWriteMode(task.write_mode) }
-  }
-  const legacy = task.write_policy || 'read_only'
-  if (legacy === 'allow_lore_write') return { ...task, default_action_policy: 'auto_run', write_mode: 'auto_write', write_scope: 'lore' }
-  if (legacy === 'allow_file_write') return { ...task, default_action_policy: 'auto_run', write_mode: 'auto_write', write_scope: 'file' }
-  if (legacy === 'allow_lore_and_file_write') return { ...task, default_action_policy: 'auto_run', write_mode: 'auto_write', write_scope: 'lore_and_file' }
-  return { ...task, default_action_policy: 'auto_run', write_policy: 'read_only', write_mode: 'read_only', write_scope: 'none' }
-}
-
-function nextWriteModePatch(task: AutomationTask, writeMode: AutomationTask['write_mode']): Partial<AutomationTask> {
-  if (writeMode === 'read_only') {
-    return { default_action_policy: actionPolicyForWriteMode(writeMode), write_mode: 'read_only', write_scope: 'none', write_policy: 'read_only' }
-  }
-  const scope = task.write_scope === 'none' ? 'file' : task.write_scope
-  return { default_action_policy: actionPolicyForWriteMode(writeMode), write_mode: writeMode, write_scope: scope, write_policy: legacyWritePolicyForScope(scope) }
-}
-
-function nextWriteScopePatch(task: AutomationTask, writeScope: AutomationTask['write_scope']): Partial<AutomationTask> {
-  if (task.write_mode === 'read_only' || writeScope === 'none') {
-    return { write_mode: 'read_only', write_scope: 'none', write_policy: 'read_only' }
-  }
-  return { write_scope: writeScope, write_policy: legacyWritePolicyForScope(writeScope) }
-}
-
-function legacyWritePolicyForScope(writeScope: AutomationTask['write_scope']): AutomationTask['write_policy'] {
-  if (writeScope === 'lore') return 'allow_lore_write'
-  if (writeScope === 'file') return 'allow_file_write'
-  if (writeScope === 'lore_and_file') return 'allow_lore_and_file_write'
-  return 'read_only'
-}
-
-function actionPolicyForWriteMode(_writeMode: AutomationTask['write_mode']): AutomationTask['default_action_policy'] {
-  return 'auto_run'
-}
-
-function upsertTask(tasks: AutomationTask[], task: AutomationTask) {
-  const index = tasks.findIndex((item) => item.id === task.id)
-  if (index < 0) return [task, ...tasks]
-  const next = tasks.slice()
-  next[index] = task
-  return next
-}
-
-function automationTaskSubtitle(task: AutomationTask, t: (key: string, options?: Record<string, unknown>) => string) {
-  const triggerCount = task.triggers?.length || 0
-  return t('automations.task.subtitle', {
-    triggerCount,
-    writeMode: t(`automations.writeMode.${writeModeKey(task.write_mode)}`),
-  })
-}
-
-function writeModeKey(writeMode: AutomationTask['write_mode']) {
-  if (writeMode === 'confirm_write') return 'confirmWrite'
-  if (writeMode === 'auto_write') return 'autoWrite'
-  return 'readOnly'
-}
-
-function buildModelProfileOptions(settings: Settings | null, selectedID: string | undefined, t: (key: string, options?: Record<string, unknown>) => string): Array<{ id: string; label: string }> {
-  const labels = modelProfileLabels(settings, t)
-  const selected = selectedID?.trim()
-  if (selected && !labels.has(selected)) {
-    labels.set(selected, t('automations.model.unknownProfile', { id: selected }))
-  }
-  return Array.from(labels.entries()).map(([id, label]) => ({
-    id,
-    label: id === 'default' ? t('automations.model.defaultProfile', { label }) : t('automations.model.profile', { id, label }),
-  }))
-}
-
-function inheritedAutomationProfileLabel(settings: Settings | null, t: (key: string, options?: Record<string, unknown>) => string) {
-  const labels = modelProfileLabels(settings, t)
-  const inheritedID = settings?.agent_models?.automation?.profile_id || settings?.agent_models?.default?.profile_id || 'default'
-  return labels.get(inheritedID) || t('automations.model.unknownProfile', { id: inheritedID })
-}
-
-function modelProfileLabels(settings: Settings | null, t: (key: string, options?: Record<string, unknown>) => string) {
-  const profiles = new Map<string, string>()
-  const add = (profile?: ModelProfileSettings) => {
-    const id = modelProfileID(profile)
-    if (!id) return
-    profiles.set(id, modelProfileLabel(profile))
-  }
-  modelProfilesWithDefault(settings ?? undefined).forEach(add)
-  if (!profiles.has('default')) profiles.set('default', t('automations.model.defaultModel'))
-  return profiles
-}
-
-function buildRunUserMessage(task: AutomationTask, t: (key: string, options?: Record<string, unknown>) => string) {
-  const prompt = task.prompt?.trim() || task.name
-  return `${t('automations.run.userMessage', { name: task.name })}\n\n${prompt}`
+function isAutomationTaskFile(path: string): boolean {
+  const normalized = path.replaceAll('\\', '/').toLowerCase()
+  return normalized === 'automations/tasks.json' || normalized.endsWith('/automations/tasks.json')
 }

@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it } from 'vitest'
-import { useWorkspaceStore } from './workspace-store'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { isSharedWorkspaceMode, useWorkspaceStore, type WorkspaceMode } from './workspace-store'
 
 describe('useWorkspaceStore', () => {
   beforeEach(() => {
@@ -35,5 +35,19 @@ describe('useWorkspaceStore', () => {
 
     useWorkspaceStore.getState().setRightPanel(null)
     expect(window.localStorage.getItem('nova:right-panel')).toBeNull()
+  })
+
+  it('classifies shared primary-menu surfaces without changing the foreground content mode', () => {
+    const modes: WorkspaceMode[] = ['ide', 'interactive', 'books', 'skills', 'agents', 'automations', 'agentchat', 'trajectory']
+
+    expect(modes.filter(isSharedWorkspaceMode)).toEqual(['books', 'skills', 'agents', 'automations', 'agentchat', 'trajectory'])
+  })
+
+  it('migrates the legacy change-review right panel back to the Agent panel', async () => {
+    window.localStorage.setItem('nova:right-panel', 'review')
+    vi.resetModules()
+    const { useWorkspaceStore: reloadedStore } = await import('./workspace-store')
+
+    expect(reloadedStore.getInitialState().rightPanel).toBe('ai')
   })
 })

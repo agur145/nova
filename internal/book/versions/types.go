@@ -1,10 +1,14 @@
 package versions
 
-import "errors"
+import (
+	"errors"
+	"time"
+
+	"github.com/go-git/go-git/v5/plumbing/filemode"
+)
 
 const (
 	DefaultTimedVersionIntervalMinutes = 10
-	DefaultAgentVersionCharThreshold   = 3000
 	DefaultAutoVersionRetention        = 100
 )
 
@@ -47,8 +51,6 @@ type VersionStatus struct {
 type VersionAutoInfo struct {
 	TimedEnabled         bool   `json:"timed_enabled"`
 	TimedIntervalMinutes int    `json:"timed_interval_minutes"`
-	AgentEnabled         bool   `json:"agent_enabled"`
-	AgentCharThreshold   int    `json:"agent_char_threshold"`
 	Retention            int    `json:"retention"`
 	LastAutoAt           string `json:"last_auto_at,omitempty"`
 }
@@ -109,34 +111,32 @@ type VersionDiff struct {
 type VersionAutoSettings struct {
 	TimedEnabled         bool
 	TimedIntervalMinutes int
-	AgentEnabled         bool
-	AgentCharThreshold   int
 	Retention            int
 }
 
 type VersionAutoResult struct {
-	Skipped bool
-	Reason  string
-	Chars   int
-	Version *VersionEntry
-}
-
-type VersionWorkspaceState struct {
-	Files map[string]VersionFileState
-}
-
-type VersionFileState struct {
-	Hash  string
-	Size  int64
-	Chars int
-	Text  bool
+	Skipped    bool
+	Reason     string
+	Version    *VersionEntry
+	RetryAfter time.Duration
 }
 
 type versionFileData struct {
-	Path  string
-	Abs   string
-	Hash  string
-	Size  int64
-	Chars int
-	Text  bool
+	Path       string
+	Abs        string
+	Hash       string
+	Size       int64
+	Chars      int
+	Text       bool
+	Mode       filemode.FileMode
+	ModifiedAt time.Time
+}
+
+// workspaceSnapshot is the immutable file projection shared by one version
+// operation. Keeping one projection prevents Status/Create/Diff from reading
+// and hashing the same workspace repeatedly.
+type workspaceSnapshot struct {
+	files      []versionFileData
+	byPath     map[string]versionFileData
+	totalBytes int64
 }

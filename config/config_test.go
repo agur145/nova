@@ -88,7 +88,7 @@ func TestNormalizePathExpandsRelativeAndHome(t *testing.T) {
 	}
 }
 
-func TestLoadWithWorkspaceMergesLayers(t *testing.T) {
+func TestLoadWithWorkspaceUsesUserSettingsAndWorkspaceAgentOverrides(t *testing.T) {
 	novaDir := t.TempDir()
 	ws := t.TempDir()
 	t.Setenv("NOVA_DIR", novaDir)
@@ -100,7 +100,13 @@ func TestLoadWithWorkspaceMergesLayers(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := WriteSettingsFile(filepath.Join(ws, ".nova", "config.toml"),
-		Settings{OpenAIModel: "ws-model", Language: "en-US", WritingSkillDefault: "novel-heavy", IDEImagePresetID: "2d-illustration"}); err != nil {
+		Settings{
+			OpenAIModel:         "ws-model",
+			Language:            "en-US",
+			WritingSkillDefault: "scene-first",
+			IDEImagePresetID:    "2d-illustration",
+			AgentTools:          AgentToolSettings{IDE: AgentToolOverride{AgentToolShell: false}},
+		}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -108,20 +114,26 @@ func TestLoadWithWorkspaceMergesLayers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.OpenAIModel != "ws-model" {
-		t.Fatalf("Workspace override expected, got %s", cfg.OpenAIModel)
+	if cfg.OpenAIModel != "user-model" {
+		t.Fatalf("user model expected, got %s", cfg.OpenAIModel)
 	}
-	if cfg.Language != "en-US" {
-		t.Fatalf("workspace language override expected, got %s", cfg.Language)
+	if cfg.Language != "zh-CN" {
+		t.Fatalf("user language expected, got %s", cfg.Language)
 	}
-	if cfg.WritingSkillDefault != "novel-heavy" {
-		t.Fatalf("workspace writing skill default expected, got %s", cfg.WritingSkillDefault)
+	if cfg.WritingSkillDefault != "novel-lite" {
+		t.Fatalf("user writing skill default expected, got %s", cfg.WritingSkillDefault)
 	}
-	if cfg.IDEImagePresetID != "2d-illustration" {
-		t.Fatalf("workspace image preset default expected, got %s", cfg.IDEImagePresetID)
+	if cfg.IDEImagePresetID != "realistic" {
+		t.Fatalf("user image preset default expected, got %s", cfg.IDEImagePresetID)
 	}
 	if layered.User.OpenAIModel != "user-model" {
 		t.Fatalf("user layer raw value lost")
+	}
+	if layered.Workspace.OpenAIModel != "" || layered.Workspace.Language != "" || layered.Workspace.WritingSkillDefault != "" {
+		t.Fatalf("workspace general settings should be filtered: %#v", layered.Workspace)
+	}
+	if enabled, present := cfg.AgentTools.IDE[AgentToolShell]; !present || enabled {
+		t.Fatalf("workspace Agent override should remain effective: %#v", cfg.AgentTools.IDE)
 	}
 }
 
@@ -150,7 +162,42 @@ func TestLoadWithWorkspaceAllowsUnlimitedAgentIdleTimeout(t *testing.T) {
 	}
 }
 
-func TestLoadWithWorkspaceAllowsUnlimitedAgentToolResultLimit(t *testing.T) {
+func TestLoadWithWorkspaceNormalizesUserProjectFileTreeEntryLimit(t *testing.T) {
+	novaDir := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("DENOVA_DIR", novaDir)
+	t.Setenv("NOVA_DIR", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI_MODEL", "")
+
+	configured := MaxProjectFileTreeEntryLimit + 1
+	if err := WriteSettingsFile(filepath.Join(novaDir, "config.toml"), Settings{
+		ProjectFileTreeEntryLimit: intPtr(configured),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteSettingsFile(filepath.Join(workspace, ".denova", "config.toml"), Settings{
+		ProjectFileTreeEntryLimit: intPtr(10),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, layered, err := LoadWithWorkspace(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ProjectFileTreeEntryLimit != MaxProjectFileTreeEntryLimit {
+		t.Fatalf("project file tree limit = %d, want %d", cfg.ProjectFileTreeEntryLimit, MaxProjectFileTreeEntryLimit)
+	}
+	if layered.User.ProjectFileTreeEntryLimit == nil || *layered.User.ProjectFileTreeEntryLimit != MaxProjectFileTreeEntryLimit {
+		t.Fatalf("user project file tree limit was not normalized: %#v", layered.User.ProjectFileTreeEntryLimit)
+	}
+	if layered.Workspace.ProjectFileTreeEntryLimit != nil {
+		t.Fatalf("workspace must not override the user-scoped project file tree limit")
+	}
+}
+
+func TestLoadWithWorkspaceMapsZeroToolResultLimitToDefault(t *testing.T) {
 	novaDir := t.TempDir()
 	ws := t.TempDir()
 	t.Setenv("NOVA_DIR", novaDir)
@@ -166,11 +213,53 @@ func TestLoadWithWorkspaceAllowsUnlimitedAgentToolResultLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AgentToolResultLimitKB != 0 {
-		t.Fatalf("agent tool result limit should allow explicit 0, got %d", cfg.AgentToolResultLimitKB)
+	if cfg.AgentToolResultLimitKB != DefaultAgentToolResultLimitKB {
+		t.Fatalf("agent tool result limit should map 0 to the default, got %d", cfg.AgentToolResultLimitKB)
 	}
-	if layered.Effective.AgentToolResultLimitKB == nil || *layered.Effective.AgentToolResultLimitKB != 0 {
-		t.Fatalf("effective agent tool result limit should preserve explicit 0")
+	if layered.Effective.AgentToolResultLimitKB == nil || *layered.Effective.AgentToolResultLimitKB != DefaultAgentToolResultLimitKB {
+		t.Fatalf("effective agent tool result limit should expose the default")
+	}
+}
+
+func TestLoadWithWorkspaceLayersAndNormalizesAgentToolParallelism(t *testing.T) {
+	tests := []struct {
+		name          string
+		user          int
+		workspace     int
+		wantUser      int
+		wantWorkspace int
+		wantEffective int
+	}{
+		{name: "workspace override", user: 4, workspace: 12, wantUser: 4, wantWorkspace: 12, wantEffective: 12},
+		{name: "zero uses default", user: 3, workspace: 0, wantUser: 3, wantWorkspace: DefaultAgentToolParallelism, wantEffective: DefaultAgentToolParallelism},
+		{name: "upper bound", user: 4, workspace: 100, wantUser: 4, wantWorkspace: MaxAgentToolParallelism, wantEffective: MaxAgentToolParallelism},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			novaDir := t.TempDir()
+			workspace := t.TempDir()
+			t.Setenv("NOVA_DIR", novaDir)
+			t.Setenv("DENOVA_DIR", "")
+			t.Setenv("OPENAI_API_KEY", "")
+			t.Setenv("OPENAI_MODEL", "")
+			if err := WriteSettingsFile(filepath.Join(novaDir, "config.toml"), Settings{AgentToolParallelism: intPtr(test.user)}); err != nil {
+				t.Fatal(err)
+			}
+			if err := WriteSettingsFile(filepath.Join(workspace, ".nova", "config.toml"), Settings{AgentToolParallelism: intPtr(test.workspace)}); err != nil {
+				t.Fatal(err)
+			}
+			cfg, layered, err := LoadWithWorkspace(workspace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if layered.User.AgentToolParallelism == nil || *layered.User.AgentToolParallelism != test.wantUser ||
+				layered.Workspace.AgentToolParallelism == nil || *layered.Workspace.AgentToolParallelism != test.wantWorkspace ||
+				layered.Effective.AgentToolParallelism == nil || *layered.Effective.AgentToolParallelism != test.wantEffective ||
+				cfg.AgentToolParallelism != test.wantEffective {
+				t.Fatalf("parallelism cfg=%d user=%v workspace=%v effective=%v", cfg.AgentToolParallelism,
+					layered.User.AgentToolParallelism, layered.Workspace.AgentToolParallelism, layered.Effective.AgentToolParallelism)
+			}
+		})
 	}
 }
 
@@ -291,7 +380,7 @@ func TestLoadWithWorkspaceAllowsGlobalUnlimitedAgentIdleTimeout(t *testing.T) {
 	}
 }
 
-func TestLoadWithWorkspaceAllowsGlobalUnlimitedAgentToolResultLimit(t *testing.T) {
+func TestLoadWithWorkspaceMapsGlobalZeroToolResultLimitToDefault(t *testing.T) {
 	root := t.TempDir()
 	t.Chdir(root)
 	ws := t.TempDir()
@@ -307,11 +396,11 @@ func TestLoadWithWorkspaceAllowsGlobalUnlimitedAgentToolResultLimit(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AgentToolResultLimitKB != 0 {
-		t.Fatalf("global agent tool result limit should allow explicit 0, got %d", cfg.AgentToolResultLimitKB)
+	if cfg.AgentToolResultLimitKB != DefaultAgentToolResultLimitKB {
+		t.Fatalf("global agent tool result limit should map 0 to the default, got %d", cfg.AgentToolResultLimitKB)
 	}
-	if layered.Global.AgentToolResultLimitKB == nil || *layered.Global.AgentToolResultLimitKB != 0 {
-		t.Fatalf("global layer should preserve explicit 0")
+	if layered.Global.AgentToolResultLimitKB == nil || *layered.Global.AgentToolResultLimitKB != DefaultAgentToolResultLimitKB {
+		t.Fatalf("global layer should expose the default")
 	}
 }
 
@@ -364,44 +453,6 @@ func TestLoadStartupPortEnvOverridesConfig(t *testing.T) {
 	}
 }
 
-func TestLoadAllowLANAccessEnvOverridesConfig(t *testing.T) {
-	root := t.TempDir()
-	t.Chdir(root)
-	t.Setenv("NOVA_DIR", "")
-	t.Setenv("DENOVA_ALLOW_LAN_ACCESS", "true")
-	t.Setenv("NOVA_ALLOW_LAN_ACCESS", "false")
-
-	if err := os.WriteFile(filepath.Join(root, "config.toml"), []byte("allow_lan_access = false\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := Load()
-	if !cfg.AllowLANAccess {
-		t.Fatalf("DENOVA_ALLOW_LAN_ACCESS should enable LAN access")
-	}
-}
-
-func TestLoadRemoteAccessCredentialsFromEnv(t *testing.T) {
-	root := t.TempDir()
-	t.Chdir(root)
-	t.Setenv("NOVA_DIR", "")
-	t.Setenv("DENOVA_REMOTE_ACCESS_USERNAME", " reader ")
-	t.Setenv("NOVA_REMOTE_ACCESS_USERNAME", "legacy")
-	t.Setenv("DENOVA_REMOTE_ACCESS_PASSWORD", "secret")
-	t.Setenv("NOVA_REMOTE_ACCESS_PASSWORD", "legacy-secret")
-
-	cfg := Load()
-	if cfg.RemoteAccessUsername != "reader" {
-		t.Fatalf("remote access username should be trimmed from env: %q", cfg.RemoteAccessUsername)
-	}
-	if cfg.RemoteAccessPasswordHash == "" {
-		t.Fatalf("remote access password env should be hashed")
-	}
-	if !CheckRemoteAccessPassword(cfg.RemoteAccessPasswordHash, "secret") {
-		t.Fatalf("remote access password hash should verify")
-	}
-}
-
 func TestLoadStartupDenovaPortEnvOverridesLegacy(t *testing.T) {
 	root := t.TempDir()
 	t.Chdir(root)
@@ -430,5 +481,26 @@ func TestLoadAgentIdleTimeoutEnvAllowsZero(t *testing.T) {
 	cfg := Load()
 	if cfg.AgentIdleTimeoutSeconds != 0 {
 		t.Fatalf("NOVA_AGENT_IDLE_TIMEOUT_SECONDS=0 should disable idle timeout, got %d", cfg.AgentIdleTimeoutSeconds)
+	}
+}
+
+func TestLoadRemoteAccessEnvironmentForContainerDeployment(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("DENOVA_DIR", filepath.Join(t.TempDir(), ".denova"))
+	t.Setenv("NOVA_DIR", "")
+	t.Setenv("DENOVA_ALLOW_LAN_ACCESS", "true")
+	t.Setenv("DENOVA_REMOTE_ACCESS_USERNAME", "container-user")
+	t.Setenv("DENOVA_REMOTE_ACCESS_PASSWORD", "container-secret")
+	t.Setenv("DENOVA_REMOTE_ACCESS_PASSWORD_HASH", "")
+
+	cfg := Load()
+	if !cfg.AllowLANAccess {
+		t.Fatalf("DENOVA_ALLOW_LAN_ACCESS should enable LAN access")
+	}
+	if cfg.RemoteAccessUsername != "container-user" {
+		t.Fatalf("remote access username = %q", cfg.RemoteAccessUsername)
+	}
+	if !CheckRemoteAccessPassword(cfg.RemoteAccessPasswordHash, "container-secret") {
+		t.Fatalf("remote access password should be hashed and verifiable")
 	}
 }

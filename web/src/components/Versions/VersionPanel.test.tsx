@@ -30,8 +30,6 @@ describe('VersionPanel', () => {
       auto: {
         timed_enabled: false,
         timed_interval_minutes: 10,
-        agent_enabled: false,
-        agent_char_threshold: 3000,
         retention: 100,
       },
     })
@@ -85,7 +83,7 @@ function renderVersionPanel() {
   })
   return render(
     <QueryClientProvider client={queryClient}>
-      <VersionPanel workspace="/workspace" refreshSignal={0} visible onClose={vi.fn()} />
+      <VersionPanel projectId="project-version" workspace="/workspace" refreshSignal={0} visible onClose={vi.fn()} />
     </QueryClientProvider>,
   )
 }

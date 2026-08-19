@@ -3,45 +3,22 @@ package api
 import (
 	"bytes"
 	"context"
+	agentinteractive "denova/internal/agents/interactive"
 	"encoding/json"
 	"net/http"
 	"testing"
 
-	"github.com/cloudwego/eino/schema"
 	"github.com/cloudwego/hertz/pkg/common/ut"
 
 	"denova/config"
+	agents "denova/internal/agents"
+	"denova/internal/agents/session"
+	"denova/internal/api/agentui"
 	runtimeapp "denova/internal/app"
-	"denova/internal/session"
+	"denova/internal/book"
+	"denova/internal/interactive"
+	"denova/internal/interactive/director"
 )
-
-type testMessageDTO struct {
-	Type                 string                   `json:"type"`
-	ID                   string                   `json:"id,omitempty"`
-	Role                 string                   `json:"role,omitempty"`
-	Content              string                   `json:"content,omitempty"`
-	Name                 string                   `json:"name,omitempty"`
-	Status               string                   `json:"status,omitempty"`
-	CreatedAt            string                   `json:"created_at,omitempty"`
-	RunID                string                   `json:"run_id,omitempty"`
-	AgentKind            string                   `json:"agent_kind,omitempty"`
-	AgentName            string                   `json:"agent_name,omitempty"`
-	RootAgentName        string                   `json:"root_agent_name,omitempty"`
-	RunPath              []string                 `json:"run_path,omitempty"`
-	SubAgent             bool                     `json:"subagent,omitempty"`
-	SubAgentSessionID    string                   `json:"subagent_session_id,omitempty"`
-	SubAgentType         string                   `json:"subagent_type,omitempty"`
-	PromptTokens         int                      `json:"prompt_tokens,omitempty"`
-	CachedPromptTokens   int                      `json:"cached_prompt_tokens,omitempty"`
-	UncachedPromptTokens int                      `json:"uncached_prompt_tokens,omitempty"`
-	CacheHitRate         float64                  `json:"cache_hit_rate,omitempty"`
-	CompletionTokens     int                      `json:"completion_tokens,omitempty"`
-	ReasoningTokens      int                      `json:"reasoning_tokens,omitempty"`
-	TotalTokens          int                      `json:"total_tokens,omitempty"`
-	ModelCalls           int                      `json:"model_calls,omitempty"`
-	GeneratedBytes       int                      `json:"generated_bytes,omitempty"`
-	UsageCalls           []session.TokenUsageCall `json:"usage_calls,omitempty"`
-}
 
 type testSessionDTO struct {
 	ID           string `json:"id"`
@@ -57,7 +34,7 @@ func TestSessionAPICRUDSwitchAndMessages(t *testing.T) {
 	server := NewServer(application, "0")
 	defaultID := application.Session().ID
 
-	if err := application.Session().Append(schema.UserMessage("默认会话消息")); err != nil {
+	if err := application.Session().Append(agents.UserMessage("默认会话消息")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -82,14 +59,13 @@ func TestSessionAPICRUDSwitchAndMessages(t *testing.T) {
 	if created.ID == "" || created.ID == defaultID || !created.Active || created.Title != "会话 B" {
 		t.Fatalf("创建会话返回不符合预期: %#v", created)
 	}
-	if err := application.Session().Append(schema.UserMessage("会话 B 消息")); err != nil {
+	if err := application.Session().Append(agents.UserMessage("会话 B 消息")); err != nil {
 		t.Fatal(err)
 	}
 
 	currentMessages := performJSONRequest(t, server, http.MethodGet, "/api/session/messages", nil)
-	var current []testMessageDTO
-	decodeResponse(t, currentMessages.Body.Bytes(), &current)
-	if len(current) != 1 || current[0].Content != "会话 B 消息" {
+	current := decodeAgentUIMessages(t, currentMessages.Body.Bytes())
+	if len(current) != 1 || current[0].Role != "user" || testTextPartContent(t, current[0]) != "会话 B 消息" {
 		t.Fatalf("当前会话消息应来自新会话: %#v", current)
 	}
 
@@ -98,9 +74,8 @@ func TestSessionAPICRUDSwitchAndMessages(t *testing.T) {
 		t.Fatalf("switch status = %d body=%s", switchResp.Code, switchResp.Body.String())
 	}
 	defaultMessages := performJSONRequest(t, server, http.MethodGet, "/api/session/messages?session_id="+defaultID, nil)
-	var defaultHistory []testMessageDTO
-	decodeResponse(t, defaultMessages.Body.Bytes(), &defaultHistory)
-	if len(defaultHistory) != 1 || defaultHistory[0].Content != "默认会话消息" {
+	defaultHistory := decodeAgentUIMessages(t, defaultMessages.Body.Bytes())
+	if len(defaultHistory) != 1 || defaultHistory[0].Role != "user" || testTextPartContent(t, defaultHistory[0]) != "默认会话消息" {
 		t.Fatalf("指定会话消息读取不符合预期: %#v", defaultHistory)
 	}
 
@@ -119,9 +94,8 @@ func TestSessionAPICRUDSwitchAndMessages(t *testing.T) {
 		t.Fatalf("clear status = %d body=%s", clearResp.Code, clearResp.Body.String())
 	}
 	clearedResp := performJSONRequest(t, server, http.MethodGet, "/api/session/messages", nil)
-	var cleared []testMessageDTO
-	decodeResponse(t, clearedResp.Body.Bytes(), &cleared)
-	if len(cleared) != 2 || cleared[1].Type != "clear" {
+	cleared := decodeAgentUIMessages(t, clearedResp.Body.Bytes())
+	if len(cleared) != 2 || testPartType(t, cleared[1]) != agentui.DataTypeClear {
 		t.Fatalf("/clear 后应保留历史并追加 clear 标记: %#v", cleared)
 	}
 
@@ -136,21 +110,79 @@ func TestSessionAPICRUDSwitchAndMessages(t *testing.T) {
 	}
 }
 
+func TestSessionMessagesAPIPaginatesNewestHistoryWithoutChangingLegacyResponse(t *testing.T) {
+	application := newTestApplication(t)
+	server := NewServer(application, "0")
+	for _, content := range []string{"消息 1", "消息 2", "消息 3", "消息 4", "消息 5"} {
+		if err := application.Session().Append(agents.UserMessage(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	latestResp := performJSONRequest(t, server, http.MethodGet, "/api/session/messages?limit=2", nil)
+	if latestResp.Code != http.StatusOK {
+		t.Fatalf("latest page status = %d body=%s", latestResp.Code, latestResp.Body.String())
+	}
+	var latest struct {
+		Messages []agentui.Message `json:"messages"`
+		Page     struct {
+			NextBefore string `json:"next_before"`
+			HasMore    bool   `json:"has_more"`
+			Total      int    `json:"total"`
+		} `json:"page"`
+	}
+	decodeResponse(t, latestResp.Body.Bytes(), &latest)
+	if len(latest.Messages) != 2 || testTextPartContent(t, latest.Messages[0]) != "消息 4" || testTextPartContent(t, latest.Messages[1]) != "消息 5" {
+		t.Fatalf("latest page should contain newest messages in display order: %#v", latest.Messages)
+	}
+	if latest.Page.NextBefore != "3" || !latest.Page.HasMore || latest.Page.Total != 5 {
+		t.Fatalf("unexpected latest page metadata: %#v", latest.Page)
+	}
+
+	earlierResp := performJSONRequest(t, server, http.MethodGet, "/api/session/messages?limit=2&before=3", nil)
+	var earlier struct {
+		Messages []agentui.Message `json:"messages"`
+		Page     struct {
+			NextBefore string `json:"next_before"`
+			HasMore    bool   `json:"has_more"`
+		} `json:"page"`
+	}
+	decodeResponse(t, earlierResp.Body.Bytes(), &earlier)
+	if len(earlier.Messages) != 2 || testTextPartContent(t, earlier.Messages[0]) != "消息 2" || testTextPartContent(t, earlier.Messages[1]) != "消息 3" {
+		t.Fatalf("earlier page should preserve chronological display order: %#v", earlier.Messages)
+	}
+	if earlier.Page.NextBefore != "1" || !earlier.Page.HasMore {
+		t.Fatalf("unexpected earlier page metadata: %#v", earlier.Page)
+	}
+
+	legacyResp := performJSONRequest(t, server, http.MethodGet, "/api/session/messages", nil)
+	legacy := decodeAgentUIMessages(t, legacyResp.Body.Bytes())
+	if len(legacy) != 5 {
+		t.Fatalf("legacy response should remain a full message array, got %d", len(legacy))
+	}
+	if latest.Messages[0].ID != legacy[3].ID || latest.Messages[1].ID != legacy[4].ID ||
+		earlier.Messages[0].ID != legacy[1].ID || earlier.Messages[1].ID != legacy[2].ID {
+		t.Fatalf("paged message IDs must stay identical to the legacy full-history response: latest=%v earlier=%v legacy=%v",
+			[]string{latest.Messages[0].ID, latest.Messages[1].ID},
+			[]string{earlier.Messages[0].ID, earlier.Messages[1].ID},
+			[]string{legacy[1].ID, legacy[2].ID, legacy[3].ID, legacy[4].ID})
+	}
+}
+
 func TestAgentSessionAPIClearsBackgroundAgentContext(t *testing.T) {
 	application := newTestApplication(t)
 	server := NewServer(application, "0")
 
-	clearResp := performJSONRequest(t, server, http.MethodPost, "/api/agents/interactive_hot_choices/session/clear", nil)
+	clearResp := performJSONRequest(t, server, http.MethodPost, "/api/agents/version_summary/session/clear", nil)
 	if clearResp.Code != http.StatusOK {
 		t.Fatalf("clear status = %d body=%s", clearResp.Code, clearResp.Body.String())
 	}
-	messagesResp := performJSONRequest(t, server, http.MethodGet, "/api/agents/interactive_hot_choices/session/messages", nil)
+	messagesResp := performJSONRequest(t, server, http.MethodGet, "/api/agents/version_summary/session/messages", nil)
 	if messagesResp.Code != http.StatusOK {
 		t.Fatalf("messages status = %d body=%s", messagesResp.Code, messagesResp.Body.String())
 	}
-	var messages []testMessageDTO
-	decodeResponse(t, messagesResp.Body.Bytes(), &messages)
-	if len(messages) != 1 || messages[0].Type != "clear" {
+	messages := decodeAgentUIMessages(t, messagesResp.Body.Bytes())
+	if len(messages) != 1 || testPartType(t, messages[0]) != agentui.DataTypeClear {
 		t.Fatalf("background agent session should expose clear marker: %#v", messages)
 	}
 
@@ -182,16 +214,17 @@ func TestSessionAPIReturnsSubAgentDisplayMetadata(t *testing.T) {
 	if resp.Code != http.StatusOK {
 		t.Fatalf("messages status = %d body=%s", resp.Code, resp.Body.String())
 	}
-	var messages []testMessageDTO
-	decodeResponse(t, resp.Body.Bytes(), &messages)
+	messages := decodeAgentUIMessages(t, resp.Body.Bytes())
 	if len(messages) != 1 {
 		t.Fatalf("expected one display message, got %#v", messages)
 	}
 	got := messages[0]
-	if got.Role != "assistant" || !got.SubAgent || got.SubAgentSessionID != "run-1-subagent-01-researcher" || got.SubAgentType != "researcher" {
+	if got.Role != "assistant" || testMetadataString(got, "display_role") != "assistant" || !testMetadataBool(got, "subagent") ||
+		testMetadataString(got, "subagent_session_id") != "run-1-subagent-01-researcher" || testMetadataString(got, "subagent_type") != "researcher" {
 		t.Fatalf("SubAgent metadata missing from API response: %#v", got)
 	}
-	if got.RunID != "run-1" || got.AgentName != "researcher" || len(got.RunPath) != 2 {
+	if testTextPartContent(t, got) != "SubAgent 调研结果" || testMetadataString(got, "run_id") != "run-1" ||
+		testMetadataString(got, "agent_name") != "researcher" || len(testMetadataStringSlice(got, "run_path")) != 2 {
 		t.Fatalf("Agent path metadata missing from API response: %#v", got)
 	}
 }
@@ -232,21 +265,109 @@ func TestSessionAPIReturnsTokenUsageFields(t *testing.T) {
 	if resp.Code != http.StatusOK {
 		t.Fatalf("messages status = %d body=%s", resp.Code, resp.Body.String())
 	}
-	var messages []testMessageDTO
-	decodeResponse(t, resp.Body.Bytes(), &messages)
+	messages := decodeAgentUIMessages(t, resp.Body.Bytes())
 	if len(messages) != 1 {
 		t.Fatalf("expected one usage message, got %#v", messages)
 	}
 	got := messages[0]
-	if got.Role != "token_usage" || got.AgentKind != config.AgentKindIDE || got.ModelCalls != 1 {
+	data := testDataPart(t, got, agentui.DataTypeTokenUsage)
+	if got.Role != "assistant" || testMetadataString(got, "display_role") != "token_usage" ||
+		testMetadataString(got, "agent_kind") != config.AgentKindIDE || testDataInt(data, "model_calls") != 1 {
 		t.Fatalf("token usage metadata missing from API response: %#v", got)
 	}
-	if got.PromptTokens != 2000 || got.CachedPromptTokens != 1000 || got.UncachedPromptTokens != 1000 || got.TotalTokens != 2300 {
+	if testDataInt(data, "prompt_tokens") != 2000 || testDataInt(data, "cached_prompt_tokens") != 1000 ||
+		testDataInt(data, "uncached_prompt_tokens") != 1000 || testDataInt(data, "total_tokens") != 2300 {
 		t.Fatalf("token usage counts missing from API response: %#v", got)
 	}
-	if got.CacheHitRate != 0.5 || got.GeneratedBytes != 128 || len(got.UsageCalls) != 1 || got.UsageCalls[0].ReasoningTokens != 20 {
+	usageCalls, _ := data["usage_calls"].([]any)
+	if testDataFloat(data, "cache_hit_rate") != 0.5 || testDataInt(data, "generated_bytes") != 128 ||
+		len(usageCalls) != 1 || testDataInt(testMap(usageCalls[0]), "reasoning_tokens") != 20 {
 		t.Fatalf("token usage details missing from API response: %#v", got)
 	}
+}
+
+func decodeAgentUIMessages(t *testing.T, data []byte) []agentui.Message {
+	t.Helper()
+	var messages []agentui.Message
+	decodeResponse(t, data, &messages)
+	return messages
+}
+
+func testPartType(t *testing.T, message agentui.Message) string {
+	t.Helper()
+	if len(message.Parts) == 0 {
+		t.Fatalf("message has no parts: %#v", message)
+	}
+	partType, _ := message.Parts[0]["type"].(string)
+	return partType
+}
+
+func testTextPartContent(t *testing.T, message agentui.Message) string {
+	t.Helper()
+	if partType := testPartType(t, message); partType != "text" {
+		t.Fatalf("expected text part, got %s in %#v", partType, message)
+	}
+	text, _ := message.Parts[0]["text"].(string)
+	return text
+}
+
+func testDataPart(t *testing.T, message agentui.Message, expectedType string) map[string]any {
+	t.Helper()
+	if partType := testPartType(t, message); partType != expectedType {
+		t.Fatalf("expected %s part, got %s in %#v", expectedType, partType, message)
+	}
+	return testMap(message.Parts[0]["data"])
+}
+
+func testMetadataString(message agentui.Message, key string) string {
+	value, _ := message.Metadata[key].(string)
+	return value
+}
+
+func testMetadataBool(message agentui.Message, key string) bool {
+	value, _ := message.Metadata[key].(bool)
+	return value
+}
+
+func testMetadataStringSlice(message agentui.Message, key string) []string {
+	values, ok := message.Metadata[key].([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if text, ok := value.(string); ok {
+			result = append(result, text)
+		}
+	}
+	return result
+}
+
+func testDataInt(data map[string]any, key string) int {
+	switch value := data[key].(type) {
+	case float64:
+		return int(value)
+	case int:
+		return value
+	default:
+		return 0
+	}
+}
+
+func testDataFloat(data map[string]any, key string) float64 {
+	switch value := data[key].(type) {
+	case float64:
+		return value
+	case int:
+		return float64(value)
+	default:
+		return 0
+	}
+}
+
+func testMap(value any) map[string]any {
+	data, _ := value.(map[string]any)
+	return data
 }
 
 func newTestApplication(t *testing.T) *runtimeapp.App {
@@ -261,7 +382,34 @@ func newTestApplication(t *testing.T) *runtimeapp.App {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(application.Close)
+	restoreDirector := application.SetInteractiveDirectorGeneratorForTest(func(callCtx context.Context, _ *config.Config, _ *book.State, toolContext agentinteractive.InteractiveStoryToolContext, _ string) (string, error) {
+		if toolContext.MaintenanceTask == "director_plan_update" || toolContext.MaintenanceTask == "opening_plan" {
+			_, err := toolContext.SubmitDirectorPlanUpdate(callCtx, interactive.DirectorPlanUpdateSubmission{
+				Decision: director.Decision{Mode: director.DecisionKeep, Reason: "测试初始化导演规划完成。"},
+				Finalize: true,
+			})
+			return "测试导演规划审查完成。", err
+		}
+		return "测试后台维护完成。", nil
+	})
+	t.Cleanup(restoreDirector)
 	return application
+}
+
+func activeWritingSessionID(t *testing.T, application *runtimeapp.App) string {
+	t.Helper()
+	sessions, err := application.Sessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, session := range sessions {
+		if session.Active {
+			return session.ID
+		}
+	}
+	t.Fatal("test application has no active Writing Session")
+	return ""
 }
 
 func performJSONRequest(t *testing.T, server *Server, method, path string, body any) *ut.ResponseRecorder {

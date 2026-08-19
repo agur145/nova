@@ -1,191 +1,176 @@
+import { Check, ListChecks, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
-import { Check, ChevronDown, Plus, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { Textarea } from '@/components/ui/textarea'
-import { DEFAULT_INTERACTIVE_REPLY_TARGET_CHARS, type StoryCreateInput } from '../opening'
-import type { StorySummary, Teller } from '../types'
+import { ConfirmDialog } from '@/components/common/ConfirmDialog'
+import { formatDateTime } from '@/i18n'
+import type { StorySummary } from '../types'
+import { CompactResourcePicker } from './CompactResourcePicker'
 
 interface StoryPickerProps {
   stories: StorySummary[]
   currentStoryId: string
-  tellers: Teller[]
   onSelect: (storyId: string) => void
-  onCreate: (input: StoryCreateInput) => void
-  onDelete: (storyId: string) => void
+  onCreate: () => void
+  onDeleteStories: (storyIds: string[]) => void | Promise<void>
   layout?: 'inline' | 'sidebar'
+  hideCreate?: boolean
 }
 
-export function StoryPicker({ stories, currentStoryId, tellers, onSelect, onCreate, onDelete, layout = 'inline' }: StoryPickerProps) {
+export function StoryPicker({ stories, currentStoryId, onSelect, onCreate, onDeleteStories, layout = 'inline', hideCreate = false }: StoryPickerProps) {
   const { t } = useTranslation()
-  const [creating, setCreating] = useState(false)
-  const [selectorOpen, setSelectorOpen] = useState(false)
-  const [title, setTitle] = useState('')
-  const [origin, setOrigin] = useState('')
-  const [replyTargetChars, setReplyTargetChars] = useState(String(DEFAULT_INTERACTIVE_REPLY_TARGET_CHARS))
-  const defaultTeller = tellers[0]?.id || 'classic'
-  const sidebar = layout === 'sidebar'
-  const suggestedTitle = defaultStoryTitle(stories, t)
-  const selectedStory = stories.find((story) => story.id === currentStoryId) || null
+  const [selectingForDelete, setSelectingForDelete] = useState(false)
+  const [deleteSelection, setDeleteSelection] = useState<Set<string>>(() => new Set())
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const selectedStories = stories.filter((story) => deleteSelection.has(story.id))
+  const allStoriesSelected = stories.length > 0 && selectedStories.length === stories.length
+  const createButton = hideCreate ? null : <Button type="button" variant="ghost" size="xs" className="nova-nav-item" onClick={onCreate}><Plus data-icon="inline-start" />{t('chat.new')}</Button>
 
-  const closeCreate = () => {
-    setTitle('')
-    setOrigin('')
-    setReplyTargetChars(String(DEFAULT_INTERACTIVE_REPLY_TARGET_CHARS))
-    setCreating(false)
+  const beginDeleteSelection = () => {
+    const initialStoryId = stories.some((story) => story.id === currentStoryId) ? currentStoryId : stories[0]?.id
+    setDeleteSelection(new Set(initialStoryId ? [initialStoryId] : []))
+    setSelectingForDelete(true)
   }
 
-  const submit = () => {
-    onCreate({
-      title: title.trim() || suggestedTitle,
-      origin: origin.trim(),
-      story_teller_id: defaultTeller,
-      reply_target_chars: normalizeReplyTargetChars(replyTargetChars),
+  const cancelDeleteSelection = () => {
+    setDeleteSelection(new Set())
+    setSelectingForDelete(false)
+  }
+
+  const toggleDeleteSelection = (storyId: string) => {
+    setDeleteSelection((current) => {
+      const next = new Set(current)
+      if (next.has(storyId)) next.delete(storyId)
+      else next.add(storyId)
+      return next
     })
-    closeCreate()
   }
 
-  const selector = (
-    <Popover open={selectorOpen} onOpenChange={setSelectorOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className={`nova-field ${sidebar ? 'w-full' : 'w-[190px]'} justify-between px-3 py-0.5 text-xs font-normal text-[var(--nova-text)] focus:ring-0`}
-          aria-label={t('storyPicker.placeholder')}
-          aria-expanded={selectorOpen}
-        >
-          <span className="min-w-0 flex-1 truncate text-left">{selectedStory?.title || t('storyPicker.placeholder')}</span>
-          <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-[var(--nova-text-faint)] transition-transform ${selectorOpen ? 'rotate-180' : ''}`} />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        sideOffset={6}
-        className={`${sidebar ? 'w-[min(calc(100vw-2rem),24rem)]' : 'w-[190px]'} max-h-[min(70dvh,28rem)] overflow-y-auto rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-surface-2)] p-1 text-[var(--nova-text)] shadow-[var(--nova-shadow)]`}
-      >
-        <div role="listbox" aria-label={t('storyPicker.placeholder')} className="space-y-1">
-          {stories.length === 0 ? (
-            <div className="px-2 py-2 text-xs text-[var(--nova-text-faint)]">{t('storyPicker.empty')}</div>
-          ) : (
-            stories.map((story) => {
-              const selected = story.id === currentStoryId
-              return (
-                <button
-                  key={story.id}
-                  type="button"
-                  role="option"
-                  aria-selected={selected}
-                  className={`flex w-full min-w-0 items-center gap-2 rounded-[var(--nova-radius)] px-2 py-1.5 text-left text-xs leading-5 ${selected ? 'bg-[var(--nova-active)] text-[var(--nova-text)]' : 'text-[var(--nova-text-muted)] hover:bg-[var(--nova-hover)] hover:text-[var(--nova-text)]'}`}
-                  onClick={() => {
-                    setSelectorOpen(false)
-                    if (story.id !== currentStoryId) onSelect(story.id)
-                  }}
-                >
-                  <span className="min-w-0 flex-1 truncate">{story.title}</span>
-                  {selected ? <Check className="h-3.5 w-3.5 shrink-0 text-[var(--nova-text-faint)]" /> : null}
-                </button>
-              )
-            })
-          )}
-        </div>
-        {currentStoryId ? (
-          <div className="mt-1 border-t border-[var(--nova-border)] pt-1">
+  const confirmDeleteStories = async () => {
+    const storyIds = selectedStories.map((story) => story.id)
+    if (storyIds.length === 0) return false
+    await onDeleteStories(storyIds)
+    cancelDeleteSelection()
+  }
+
+  return (
+    <>
+      <CompactResourcePicker
+        items={stories}
+        selectedId={currentStoryId}
+        getId={(story) => story.id}
+        getLabel={(story) => story.title}
+        label={t('storyPicker.label')}
+        ariaLabel={t('storyPicker.placeholder')}
+        placeholder={t('storyPicker.placeholder')}
+        emptyLabel={t('storyPicker.empty')}
+        layout={layout}
+        contentClassName="w-[min(calc(100vw-2rem),22rem)]"
+        trailingAction={createButton}
+        renderItem={selectingForDelete ? (_story, { id, label }) => {
+          const checked = deleteSelection.has(id)
+          return (
+            <button
+              type="button"
+              aria-pressed={checked}
+              className={`flex w-full min-w-0 items-center gap-2 rounded-[var(--nova-radius)] px-2 py-1.5 text-left text-xs leading-5 transition-colors ${checked ? 'bg-[var(--nova-danger-bg)] text-[var(--nova-text)]' : 'text-[var(--nova-text-muted)] hover:bg-[var(--nova-hover)] hover:text-[var(--nova-text)]'}`}
+              onClick={() => toggleDeleteSelection(id)}
+            >
+              <span
+                aria-hidden="true"
+                className={`flex size-3.5 shrink-0 items-center justify-center rounded-[4px] border ${checked ? 'border-[var(--nova-danger)] bg-[var(--nova-danger)] text-white' : 'border-[var(--nova-border-strong)] bg-[var(--nova-surface)]'}`}
+              >
+                {checked ? <Check className="size-2.5" strokeWidth={3} /> : null}
+              </span>
+              <span className="min-w-0 flex-1 truncate">{label}</span>
+            </button>
+          )
+        } : (story, { label, selected, select }) => {
+          const lastTurnTime = story.updated_at ? formatDateTime(story.updated_at) : ''
+          return (
+            <button
+              type="button"
+              aria-label={label}
+              aria-current={selected ? 'true' : undefined}
+              className={`flex w-full min-w-0 flex-col gap-0.5 rounded-[var(--nova-radius)] px-2 py-1.5 text-left text-xs leading-5 transition-colors ${selected ? 'bg-[var(--nova-active)] text-[var(--nova-text)]' : 'text-[var(--nova-text-muted)] hover:bg-[var(--nova-hover)] hover:text-[var(--nova-text)]'}`}
+              onClick={select}
+            >
+              <span className="flex min-w-0 items-center gap-2">
+                <span className="min-w-0 flex-1 truncate">{label}</span>
+                {selected ? <Check className="size-3.5 shrink-0 text-[var(--nova-text-faint)]" /> : null}
+              </span>
+              <span className="flex min-w-0 items-center gap-2 text-[11px] leading-4 text-[var(--nova-text-faint)]">
+                <span className="shrink-0">{t('storyPicker.turnCount', { count: story.turn_count })}</span>
+                {lastTurnTime ? (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span className="min-w-0 truncate">{t('storyPicker.lastTurn', { time: lastTurnTime })}</span>
+                  </>
+                ) : null}
+              </span>
+            </button>
+          )
+        }}
+        renderFooter={stories.length > 0 ? (close) => selectingForDelete ? (
+          <div className="sticky bottom-0 mt-1 space-y-1 border-t border-[var(--nova-border)] bg-[var(--nova-surface-2)] pt-1">
+            <div className="flex items-center justify-between gap-2 px-2 py-0.5 text-[11px] text-[var(--nova-text-faint)]">
+              <span>{t('storyPicker.selectedCount', { count: selectedStories.length })}</span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                className="-mr-1"
+                onClick={() => setDeleteSelection(allStoriesSelected ? new Set() : new Set(stories.map((story) => story.id)))}
+              >
+                {t(allStoriesSelected ? 'storyPicker.clearSelection' : 'storyPicker.selectAll')}
+              </Button>
+            </div>
+            <div className="flex gap-1">
+              <Button type="button" variant="ghost" size="xs" className="flex-1" onClick={cancelDeleteSelection}>
+                {t('common.cancel')}
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                size="xs"
+                className="flex-1"
+                disabled={selectedStories.length === 0}
+                onClick={() => {
+                  close()
+                  setDeleteDialogOpen(true)
+                }}
+              >
+                <Trash2 data-icon="inline-start" />
+                {t('storyPicker.deleteSelected', { count: selectedStories.length })}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="sticky bottom-0 mt-1 border-t border-[var(--nova-border)] bg-[var(--nova-surface-2)] pt-1">
             <Button
               type="button"
               variant="ghost"
               size="xs"
               className="w-full justify-start gap-1.5 px-2 text-[var(--nova-text-faint)] hover:bg-[var(--nova-danger-bg)] hover:text-[var(--nova-danger)]"
-              onClick={() => {
-                setSelectorOpen(false)
-                onDelete(currentStoryId)
-              }}
-              aria-label={t('storyPicker.delete')}
+              onClick={beginDeleteSelection}
             >
-              <Trash2 className="h-3 w-3" />
-              {t('storyPicker.delete')}
+              <ListChecks data-icon="inline-start" />
+              {t('storyPicker.batchDelete')}
             </Button>
           </div>
-        ) : null}
-      </PopoverContent>
-    </Popover>
+        ) : undefined}
+        onSelect={onSelect}
+      />
+      <ConfirmDialog
+        open={deleteDialogOpen}
+        onOpenChange={setDeleteDialogOpen}
+        title={t('storyPicker.confirmDeleteTitle', { count: selectedStories.length })}
+        description={t('storyPicker.confirmDeleteDescription')}
+        confirmLabel={t('common.delete')}
+        tone="danger"
+        details={selectedStories.map((story) => story.title)}
+        onConfirm={confirmDeleteStories}
+      />
+    </>
   )
-
-  const createButton = (
-    <Popover
-      open={creating}
-      onOpenChange={(open) => {
-        if (!open) {
-          closeCreate()
-          return
-        }
-        setCreating(true)
-        setTitle((current) => (current.trim() ? current : suggestedTitle))
-      }}
-    >
-      <PopoverTrigger asChild>
-        <Button variant="ghost" size="xs" className="nova-nav-item">
-          <Plus className="h-3 w-3" />
-          {t('chat.new')}
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="nova-panel w-80 border p-3 text-[var(--nova-text)] shadow-[var(--nova-shadow)]">
-        <div className="mb-2 text-xs font-medium">{t('storyPicker.create')}</div>
-        <Input className="nova-field mb-2 text-xs" placeholder={suggestedTitle} value={title} onChange={(event) => setTitle(event.target.value)} />
-        <Textarea autoResize className="nova-field mb-3 min-h-20 resize-none text-xs" placeholder={t('storyPicker.originPlaceholder')} value={origin} onChange={(event) => setOrigin(event.target.value)} />
-        <div className="mb-3">
-          <div className="mb-1.5 text-[11px] text-[var(--nova-text-faint)]">{t('storyPicker.replyTargetChars')}</div>
-          <Input className="nova-field text-xs" type="number" min={1} value={replyTargetChars} onChange={(event) => setReplyTargetChars(event.target.value)} placeholder={String(DEFAULT_INTERACTIVE_REPLY_TARGET_CHARS)} />
-        </div>
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" size="xs" onClick={closeCreate}>
-            {t('common.cancel')}
-          </Button>
-          <Button size="xs" onClick={submit}>
-            {t('common.create')}
-          </Button>
-        </div>
-      </PopoverContent>
-    </Popover>
-  )
-
-  if (sidebar) {
-    return (
-      <div className="flex min-w-0 flex-col gap-1.5">
-        <div className="flex items-center justify-between gap-2">
-          <span className="shrink-0 text-[11px] font-medium text-[var(--nova-text-faint)]">{t('storyPicker.label')}</span>
-          <div className="flex shrink-0 items-center gap-1">{createButton}</div>
-        </div>
-        {selector}
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex min-w-0 items-center gap-1.5">
-      <span className="shrink-0 text-[11px] font-medium text-[var(--nova-text-faint)]">{t('storyPicker.label')}</span>
-      {selector}
-      {createButton}
-    </div>
-  )
-}
-
-function normalizeReplyTargetChars(value: string) {
-  const parsed = Number(value)
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_INTERACTIVE_REPLY_TARGET_CHARS
-}
-
-function defaultStoryTitle(stories: StorySummary[], t: (key: string, options?: Record<string, unknown>) => string): string {
-  if (stories.length === 0) return t('storyPicker.firstTitle')
-
-  let next = stories.length + 1
-  for (const story of stories) {
-    const match = story.title.trim().match(/^故事线\s*(\d+)$/)
-    if (!match) continue
-    next = Math.max(next, Number(match[1]) + 1)
-  }
-  return t('storyPicker.numberedTitle', { number: Math.max(2, next) })
 }

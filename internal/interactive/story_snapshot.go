@@ -7,6 +7,11 @@ import (
 )
 
 func snapshotFromLines(storyID, branchID string, meta StoryMeta, lines []StoryEventRecord) (Snapshot, error) {
+	projectedLines, err := projectStoryEventOverlays(lines)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	lines = projectedLines
 	if branchID == "" {
 		branchID = meta.CurrentBranch
 	}
@@ -15,7 +20,10 @@ func snapshotFromLines(storyID, branchID string, meta StoryMeta, lines []StoryEv
 		return Snapshot{}, fmt.Errorf("分支不存在: %s", branchID)
 	}
 	state := initialStoryState()
-	snapshot := Snapshot{StoryID: storyID, BranchID: branchID, State: state}
+	snapshot := Snapshot{
+		StoryID: storyID, BranchID: branchID, Turns: make([]TurnEvent, 0), State: state,
+		ActorStateSchema: meta.ActorStateSchema, StateSchemaInitialization: meta.StateSchemaInitialization,
+	}
 	eventsByID := eventsByID(lines)
 	path, pathSet := eventPath(branch.Head, eventsByID)
 	turnVersions := buildTurnVersionIndex(lines)
@@ -27,6 +35,13 @@ func snapshotFromLines(storyID, branchID string, meta StoryMeta, lines []StoryEv
 				return Snapshot{}, err
 			}
 			turn.DisplayEvents = sanitizeDisplayEvents(turn.DisplayEvents)
+			turn.ModelContextMessages = sanitizeModelContextMessages(turn.ModelContextMessages)
+			turn.ResolvedPlayerInputContexts, err = normalizeResolvedPlayerInputContexts(
+				turn.ResolvedPlayerInputContexts, turn.BranchID, turn.PlayerInputID, turn.ConsumedPlayerInputIDs,
+			)
+			if err != nil {
+				return Snapshot{}, err
+			}
 			versions := turnVersions[turnVersionKey(turn.BranchID, parentIDFromRaw(record.Raw))]
 			if len(versions) > 1 {
 				turn.Versions = versions
@@ -45,6 +60,9 @@ func snapshotFromLines(storyID, branchID string, meta StoryMeta, lines []StoryEv
 				for _, op := range turn.StateDelta.Ops {
 					applyStateOp(state, op)
 				}
+				for _, op := range turn.StateDelta.ActorOps {
+					applyActorStateOp(state, op)
+				}
 			}
 		case StoryEventTypeStateDelta:
 			var delta StateDeltaEvent
@@ -54,23 +72,164 @@ func snapshotFromLines(storyID, branchID string, meta StoryMeta, lines []StoryEv
 			for _, op := range delta.Ops {
 				applyStateOp(state, op)
 			}
-		case StoryEventTypeCompaction:
-			var compaction ContextCompactionEvent
-			if err := mapToStruct(record.Raw, &compaction); err != nil {
-				return Snapshot{}, err
+			for _, op := range delta.ActorOps {
+				applyActorStateOp(state, op)
 			}
-			snapshot.ContextCompaction = &compaction
-		case StoryEventTypeCompactionRemoved:
-			var removal ContextCompactionRemovalEvent
-			if err := mapToStruct(record.Raw, &removal); err != nil {
-				return Snapshot{}, err
+		case StoryEventTypePlayerInput, StoryEventTypeModelContextBatch, StoryEventTypeBranch, StoryEventTypeHotChoices, StoryEventTypeTurnVersionSelected:
+			// These are side/audit events. They are projected separately or are
+			// intentionally absent from model-visible turn/state history.
+		}
+	}
+	initializeActors := true
+	if storyStateSchemaPolicyRequiresOpeningDraft(meta.StateSchemaPolicy) && meta.StateSchemaInitialization != nil && meta.StateSchemaInitialization.Status == StateSchemaInitializationWaitingOpening {
+		initializeActors = false
+	}
+	if initializeActors {
+		if err := applyFrozenMissingInitialActors(state, meta.ActorStateSchema); err != nil {
+			return Snapshot{}, fmt.Errorf("补全冻结初始 Actor 失败: %w", err)
+		}
+	}
+	applyLegacyActorStateAliases(state, meta.ActorStateSchema)
+	if snapshot.CurrentTurn != nil && (snapshot.CurrentTurn.TurnResult == nil || len(snapshot.CurrentTurn.TurnResult.Choices) == 0) && snapshot.CurrentTurn.HotState == nil {
+		if legacy, ok := latestHotChoicesForHead(lines, branchID, snapshot.CurrentTurn.ID); ok {
+			hotState := normalizeHotState(&HotState{Choices: legacy.Choices})
+			snapshot.CurrentTurn.HotState = hotState
+			if len(snapshot.Turns) > 0 {
+				snapshot.Turns[len(snapshot.Turns)-1].HotState = hotState
 			}
-			snapshot.ContextCompaction = nil
-			snapshot.ContextCompactionRemoval = &removal
 		}
 	}
 	snapshot.Graph = buildStoryGraph(meta, lines, eventsByID, pathSet)
+	pendingInputs, err := pendingPlayerInputsForBranch(lines, branchID, pathSet)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	snapshot.PendingPlayerInputs = pendingInputs
+	pendingBatches, err := pendingModelContextBatchesForBranch(lines, branchID, pathSet, pendingInputs)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	snapshot.PendingModelContextBatches = pendingBatches
+	snapshot.TurnCount = len(snapshot.Turns)
 	return snapshot, nil
+}
+
+func pendingModelContextBatchesForBranch(
+	lines []StoryEventRecord,
+	branchID string,
+	activeAncestry map[string]bool,
+	pendingInputs []PlayerInputAcceptedEvent,
+) ([]ModelContextBatchEvent, error) {
+	inputOrder := make(map[string]int, len(pendingInputs))
+	inputs := make(map[string]PlayerInputAcceptedEvent, len(pendingInputs))
+	for index, input := range pendingInputs {
+		inputOrder[input.ID] = index
+		inputs[input.ID] = input
+	}
+	result := make([]ModelContextBatchEvent, 0)
+	for _, record := range lines {
+		if record.Envelope.Type != StoryEventTypeModelContextBatch || record.Envelope.BranchID != branchID {
+			continue
+		}
+		var event ModelContextBatchEvent
+		if err := mapToStruct(record.Raw, &event); err != nil {
+			return nil, err
+		}
+		normalized, err := normalizeModelContextBatchEvent(event)
+		if err != nil {
+			return nil, err
+		}
+		input, pending := inputs[normalized.PlayerInputID]
+		if !pending {
+			continue
+		}
+		if normalized.AgentCommandID != input.AgentCommandID || normalized.AgentOperationID != input.AgentOperationID ||
+			normalized.AgentCycle != input.AgentCycle {
+			return nil, fmt.Errorf("%w: pending batch does not match accepted player input", ErrModelContextBatchIdentityConflict)
+		}
+		if parentID := strings.TrimSpace(normalized.ParentID); parentID != "" && !activeAncestry[parentID] {
+			continue
+		}
+		result = append(result, normalized)
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		left, right := inputOrder[result[i].PlayerInputID], inputOrder[result[j].PlayerInputID]
+		if left != right {
+			return left < right
+		}
+		return result[i].BatchOrdinal < result[j].BatchOrdinal
+	})
+	lastOrdinal := make(map[string]int, len(pendingInputs))
+	for _, event := range result {
+		expected := lastOrdinal[event.PlayerInputID]
+		if event.BatchOrdinal != expected {
+			return nil, fmt.Errorf("%w: player input %s has a missing or duplicate pending batch ordinal", ErrModelContextBatchIdentityConflict, event.PlayerInputID)
+		}
+		lastOrdinal[event.PlayerInputID] = expected + 1
+	}
+	return result, nil
+}
+
+func pendingPlayerInputsForBranch(lines []StoryEventRecord, branchID string, activeAncestry map[string]bool) ([]PlayerInputAcceptedEvent, error) {
+	consumed := make(map[string]bool)
+	for _, record := range lines {
+		if record.Envelope.Type != StoryEventTypeTurn {
+			continue
+		}
+		var turn TurnEvent
+		if err := mapToStruct(record.Raw, &turn); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(turn.PlayerInputID) != "" {
+			consumed[turn.PlayerInputID] = true
+		}
+		for _, playerInputID := range turn.ConsumedPlayerInputIDs {
+			if playerInputID = strings.TrimSpace(playerInputID); playerInputID != "" {
+				consumed[playerInputID] = true
+			}
+		}
+	}
+	pending := make([]PlayerInputAcceptedEvent, 0)
+	for _, record := range lines {
+		if record.Envelope.Type != StoryEventTypePlayerInput || record.Envelope.BranchID != branchID || consumed[record.Envelope.ID] {
+			continue
+		}
+		var input PlayerInputAcceptedEvent
+		if err := mapToStruct(record.Raw, &input); err != nil {
+			return nil, err
+		}
+		// Accepted input is an audit side event and does not advance branch.Head.
+		// Only an input attached to the current ancestry can participate in a
+		// future model call; rewound or version-replaced futures remain durable
+		// but are deliberately absent from this model-facing projection.
+		if parentID := strings.TrimSpace(input.ParentID); parentID != "" && !activeAncestry[parentID] {
+			continue
+		}
+		pending = append(pending, input)
+	}
+	return pending, nil
+}
+
+// pendingPlayerInputsFromProjection intersects a bounded recent-page result
+// with the journal reducer's complete pending-ID checkpoint. The page retains
+// the rich input payload; the reducer supplies the authoritative lifecycle.
+func pendingPlayerInputsFromProjection(inputs []PlayerInputAcceptedEvent, pendingPlayerInputIDs []string) []PlayerInputAcceptedEvent {
+	if len(inputs) == 0 || len(pendingPlayerInputIDs) == 0 {
+		return []PlayerInputAcceptedEvent{}
+	}
+	pending := make(map[string]bool, len(pendingPlayerInputIDs))
+	for _, playerInputID := range pendingPlayerInputIDs {
+		if playerInputID = strings.TrimSpace(playerInputID); playerInputID != "" {
+			pending[playerInputID] = true
+		}
+	}
+	result := make([]PlayerInputAcceptedEvent, 0, len(inputs))
+	for _, input := range inputs {
+		if pending[input.ID] {
+			result = append(result, input)
+		}
+	}
+	return result
 }
 
 func buildTurnVersionIndex(lines []StoryEventRecord) map[string][]TurnVersion {
@@ -102,15 +261,17 @@ func turnVersionKey(branchID, parentID string) string {
 
 func initialStoryState() map[string]any {
 	return map[string]any{
-		"on_stage":    []any{},
-		"characters":  map[string]any{},
-		"events":      []any{},
-		"scene":       map[string]any{},
-		"inventory":   map[string]any{},
-		"resources":   map[string]any{},
-		"world_flags": []any{},
-		"rules":       []any{},
-		"threads":     []any{},
+		"on_stage":       []any{},
+		"actors":         map[string]any{},
+		"actor_archives": map[string]any{},
+		"characters":     map[string]any{},
+		"events":         []any{},
+		"scene":          map[string]any{},
+		"inventory":      map[string]any{},
+		"resources":      map[string]any{},
+		"world_flags":    []any{},
+		"rules":          []any{},
+		"threads":        []any{},
 	}
 }
 
@@ -133,11 +294,12 @@ func normalizeChoiceListLimit(input []string, limit int) []string {
 	seen := map[string]bool{}
 	for _, choice := range input {
 		choice = strings.TrimSpace(choice)
-		if choice == "" || seen[choice] {
+		key := normalizedChoiceKey(choice)
+		if key == "" || seen[key] {
 			continue
 		}
 		choices = append(choices, choice)
-		seen[choice] = true
+		seen[key] = true
 		if len(choices) >= limit {
 			break
 		}
@@ -231,15 +393,22 @@ func buildStoryGraph(meta StoryMeta, lines []StoryEventRecord, events map[string
 		if parentID != "" {
 			parentID = nearestTurnAncestor(parentID, events)
 		}
+		terminal := turn.TerminalOutcome != nil && turn.TerminalOutcome.Terminal
+		terminalType := ""
+		if turn.TerminalOutcome != nil {
+			terminalType = turn.TerminalOutcome.Type
+		}
 		nodes = append(nodes, PlotNode{
-			ID:       turn.ID,
-			ParentID: parentID,
-			BranchID: turn.BranchID,
-			Title:    compactText(turn.User, 24),
-			Summary:  compactText(turn.Narrative, 72),
-			Ts:       turn.Ts,
-			Current:  currentPath[turn.ID],
-			Head:     headTurns[turn.ID],
+			ID:           turn.ID,
+			ParentID:     parentID,
+			BranchID:     turn.BranchID,
+			Title:        compactText(turn.User, 24),
+			Summary:      compactText(turn.Narrative, 72),
+			Ts:           turn.Ts,
+			Current:      currentPath[turn.ID],
+			Head:         headTurns[turn.ID],
+			Terminal:     terminal,
+			TerminalType: terminalType,
 		})
 	}
 	return StoryGraph{Nodes: nodes, Branches: branchSummaries(meta)}
@@ -257,25 +426,6 @@ func nearestTurnAncestor(head string, events map[string]StoryEventRecord) string
 		id = parentIDFromRaw(record.Raw)
 	}
 	return ""
-}
-
-func nextContextCompactionEpoch(lines []StoryEventRecord, head string) int {
-	events := eventsByID(lines)
-	path, _ := eventPath(head, events)
-	epoch := 0
-	for _, record := range path {
-		if record.Envelope.Type != StoryEventTypeCompaction {
-			continue
-		}
-		var compaction ContextCompactionEvent
-		if err := mapToStruct(record.Raw, &compaction); err != nil {
-			continue
-		}
-		if compaction.Epoch > epoch {
-			epoch = compaction.Epoch
-		}
-	}
-	return epoch + 1
 }
 
 func branchSummaries(meta StoryMeta) []BranchSummary {

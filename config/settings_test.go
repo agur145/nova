@@ -2,10 +2,14 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/alfredxw/denova/agent/providers"
 )
 
 func TestDefaultSettingsValues(t *testing.T) {
@@ -22,8 +26,14 @@ func TestDefaultSettingsValues(t *testing.T) {
 	if s.AutoSaveEnabled == nil || *s.AutoSaveEnabled != true {
 		t.Fatalf("AutoSaveEnabled default")
 	}
-	if s.HideChapterBodyLiveOutput == nil || *s.HideChapterBodyLiveOutput {
-		t.Fatalf("HideChapterBodyLiveOutput should default off")
+	if s.VersionTimedEnabled == nil || !*s.VersionTimedEnabled {
+		t.Fatalf("VersionTimedEnabled should default on")
+	}
+	if s.VersionTimedIntervalMinutes == nil || *s.VersionTimedIntervalMinutes != 10 {
+		t.Fatalf("VersionTimedIntervalMinutes should default to 10")
+	}
+	if s.ProjectFileTreeEntryLimit == nil || *s.ProjectFileTreeEntryLimit != DefaultProjectFileTreeEntryLimit {
+		t.Fatalf("ProjectFileTreeEntryLimit default")
 	}
 	if s.MaxIteration != nil {
 		t.Fatalf("MaxIteration should default to unset")
@@ -34,11 +44,28 @@ func TestDefaultSettingsValues(t *testing.T) {
 	if s.AgentToolResultLimitKB == nil || *s.AgentToolResultLimitKB != DefaultAgentToolResultLimitKB {
 		t.Fatalf("AgentToolResultLimitKB default")
 	}
+	if s.AgentToolParallelism == nil || *s.AgentToolParallelism != DefaultAgentToolParallelism {
+		t.Fatalf("AgentToolParallelism default")
+	}
+	if len(s.TerminalCommands) != 2 ||
+		s.TerminalCommands[0] != (TerminalCommandSettings{ID: "codex", Name: "Codex CLI", Command: DefaultTerminalCodexCommand, Enabled: true}) ||
+		s.TerminalCommands[1] != (TerminalCommandSettings{ID: "claude", Name: "Claude Code", Command: DefaultTerminalClaudeCommand, Enabled: true}) {
+		t.Fatalf("terminal CLI defaults: %#v", s.TerminalCommands)
+	}
+	if s.TraceCaptureLevel != DefaultTraceCaptureLevel || s.TraceExporter != DefaultTraceExporter {
+		t.Fatalf("trace defaults: capture=%q exporter=%q", s.TraceCaptureLevel, s.TraceExporter)
+	}
+	if s.TraceRetentionRuns == nil || *s.TraceRetentionRuns != DefaultTraceRetentionRuns {
+		t.Fatalf("TraceRetentionRuns default")
+	}
 	if s.InteractiveStageFontSize == nil || *s.InteractiveStageFontSize != 16 {
 		t.Fatalf("InteractiveStageFontSize default")
 	}
 	if s.InteractiveStageLineHeight == nil || *s.InteractiveStageLineHeight != 1.78 {
 		t.Fatalf("InteractiveStageLineHeight default")
+	}
+	if s.IDEStoryTellerID != "rhythm" || s.InteractiveStoryTellerID != "rhythm" {
+		t.Fatalf("narrative style defaults: writing=%q game=%q", s.IDEStoryTellerID, s.InteractiveStoryTellerID)
 	}
 	if s.ChapterFilenameFormat != "ch{order:05}-{chapter}-{title}.md" {
 		t.Fatalf("ChapterFilenameFormat default: %s", s.ChapterFilenameFormat)
@@ -46,17 +73,17 @@ func TestDefaultSettingsValues(t *testing.T) {
 	if s.VolumeDirFormat != "v{order:05}-{volume}" {
 		t.Fatalf("VolumeDirFormat default: %s", s.VolumeDirFormat)
 	}
-	if s.InteractiveHotChoices == nil || *s.InteractiveHotChoices != true {
-		t.Fatalf("InteractiveHotChoices default")
+	if s.AgentModels.IDE.ThinkingLevel != string(providers.ThinkingLevelMedium) {
+		t.Fatalf("IDE thinking level = %q, want medium", s.AgentModels.IDE.ThinkingLevel)
 	}
-	if s.AgentModels.IDE.EnableThinking == nil || !*s.AgentModels.IDE.EnableThinking {
-		t.Fatalf("IDE thinking should default on")
+	if s.AgentModels.ConfigManager.ThinkingLevel != string(providers.ThinkingLevelMedium) {
+		t.Fatalf("ConfigManager thinking level = %q, want medium", s.AgentModels.ConfigManager.ThinkingLevel)
 	}
-	if s.AgentModels.ConfigManager.EnableThinking == nil || !*s.AgentModels.ConfigManager.EnableThinking {
-		t.Fatalf("ConfigManager thinking should default on")
+	if s.AgentModels.InteractiveStory.ThinkingLevel != string(providers.ThinkingLevelOff) {
+		t.Fatalf("InteractiveStory thinking level = %q, want off", s.AgentModels.InteractiveStory.ThinkingLevel)
 	}
-	if s.AgentModels.ToolAgent.EnableThinking == nil || *s.AgentModels.ToolAgent.EnableThinking {
-		t.Fatalf("ToolAgent thinking should default off")
+	if s.AgentModels.ToolAgent.ThinkingLevel != string(providers.ThinkingLevelOff) {
+		t.Fatalf("ToolAgent thinking level = %q, want off", s.AgentModels.ToolAgent.ThinkingLevel)
 	}
 	if s.UIFontFamily != "apple-system" {
 		t.Fatalf("UIFontFamily default: %s", s.UIFontFamily)
@@ -106,9 +133,6 @@ func TestDefaultSettingsValues(t *testing.T) {
 	if s.GeneralSubAgents.IDE == nil || !*s.GeneralSubAgents.IDE {
 		t.Fatalf("GeneralSubAgents should default enabled for IDE")
 	}
-	if s.GeneralSubAgents.Automation == nil || !*s.GeneralSubAgents.Automation {
-		t.Fatalf("GeneralSubAgents should default enabled for automation")
-	}
 	if s.GeneralSubAgents.InteractiveStory != nil || s.GeneralSubAgents.ConfigManager != nil {
 		t.Fatalf("GeneralSubAgents should not explicitly enable interactive story or config manager by default")
 	}
@@ -122,6 +146,7 @@ func TestMergeOverridesNonZero(t *testing.T) {
 		MaxIteration:               intPtr(10),
 		AgentIdleTimeoutSeconds:    intPtr(120),
 		AgentToolResultLimitKB:     intPtr(0),
+		AgentToolParallelism:       intPtr(4),
 		UIFontFamily:               "apple-system",
 		UIFontSize:                 intPtr(14),
 		ReadingFontFamily:          "source-han-serif",
@@ -130,7 +155,6 @@ func TestMergeOverridesNonZero(t *testing.T) {
 		Theme:                      "dark",
 		MotionIntensity:            "system",
 		UpdateCheckEnabled:         boolPtr(true),
-		HideChapterBodyLiveOutput:  boolPtr(false),
 		ChapterFilenameFormat:      "old-chapter",
 		VolumeDirFormat:            "old-volume",
 		BackendPort:                intPtr(8080),
@@ -138,7 +162,6 @@ func TestMergeOverridesNonZero(t *testing.T) {
 		AllowLANAccess:             boolPtr(false),
 		WritingSkillDefault:        "novel-standard",
 		IDEImagePresetID:           "realistic",
-		InteractiveHotChoices:      boolPtr(true),
 		InteractiveStageFontSize:   intPtr(16),
 		InteractiveStageLineHeight: floatPtr(1.78),
 	}
@@ -148,6 +171,7 @@ func TestMergeOverridesNonZero(t *testing.T) {
 		MaxIteration:               nil, // 继承 parent
 		AgentIdleTimeoutSeconds:    intPtr(240),
 		AgentToolResultLimitKB:     intPtr(64),
+		AgentToolParallelism:       intPtr(12),
 		UIFontFamily:               "humanist-sans",
 		UIFontSize:                 intPtr(13),
 		ReadingFontFamily:          "system-serif",
@@ -156,17 +180,15 @@ func TestMergeOverridesNonZero(t *testing.T) {
 		Theme:                      "light",
 		MotionIntensity:            "reduced",
 		UpdateCheckEnabled:         boolPtr(false),
-		HideChapterBodyLiveOutput:  boolPtr(true),
 		ChapterFilenameFormat:      "new-chapter",
 		VolumeDirFormat:            "new-volume",
 		BackendPort:                intPtr(18080),
 		FrontendPort:               intPtr(15173),
 		AllowLANAccess:             boolPtr(true),
-		WritingSkillDefault:        "novel-heavy",
+		WritingSkillDefault:        "scene-first",
 		IDEImagePresetID:           "2d-illustration",
 		RemoteAccessUsername:       "reader",
 		RemoteAccessPasswordHash:   "$2a$10$hash",
-		InteractiveHotChoices:      boolPtr(false),
 		InteractiveStageFontSize:   intPtr(18),
 		InteractiveStageLineHeight: floatPtr(1.95),
 	}
@@ -188,6 +210,9 @@ func TestMergeOverridesNonZero(t *testing.T) {
 	}
 	if out.AgentToolResultLimitKB == nil || *out.AgentToolResultLimitKB != 64 {
 		t.Fatalf("AgentToolResultLimitKB should override parent")
+	}
+	if out.AgentToolParallelism == nil || *out.AgentToolParallelism != 12 {
+		t.Fatalf("AgentToolParallelism should override parent")
 	}
 	if out.UIFontFamily != "humanist-sans" {
 		t.Fatalf("UIFontFamily should override parent: %s", out.UIFontFamily)
@@ -213,9 +238,6 @@ func TestMergeOverridesNonZero(t *testing.T) {
 	if out.UpdateCheckEnabled == nil || *out.UpdateCheckEnabled != false {
 		t.Fatalf("UpdateCheckEnabled should override parent")
 	}
-	if out.HideChapterBodyLiveOutput == nil || *out.HideChapterBodyLiveOutput != true {
-		t.Fatalf("HideChapterBodyLiveOutput should override parent")
-	}
 	if out.ChapterFilenameFormat != "new-chapter" || out.VolumeDirFormat != "new-volume" {
 		t.Fatalf("filename formats should override parent: %#v", out)
 	}
@@ -228,7 +250,7 @@ func TestMergeOverridesNonZero(t *testing.T) {
 	if out.AllowLANAccess == nil || !*out.AllowLANAccess {
 		t.Fatalf("AllowLANAccess should override parent")
 	}
-	if out.WritingSkillDefault != "novel-heavy" {
+	if out.WritingSkillDefault != "scene-first" {
 		t.Fatalf("WritingSkillDefault should override parent: %s", out.WritingSkillDefault)
 	}
 	if out.IDEImagePresetID != "2d-illustration" {
@@ -236,9 +258,6 @@ func TestMergeOverridesNonZero(t *testing.T) {
 	}
 	if out.RemoteAccessUsername != "reader" || out.RemoteAccessPasswordHash == "" || !out.RemoteAccessPasswordSet {
 		t.Fatalf("remote access credentials should override parent: %#v", out)
-	}
-	if out.InteractiveHotChoices == nil || *out.InteractiveHotChoices != false {
-		t.Fatalf("InteractiveHotChoices should override parent")
 	}
 	if out.InteractiveStageFontSize == nil || *out.InteractiveStageFontSize != 18 {
 		t.Fatalf("InteractiveStageFontSize should override parent")
@@ -254,6 +273,69 @@ func TestMergePointerExplicitOverride(t *testing.T) {
 	out := Merge(parent, child)
 	if out.AutoSaveEnabled == nil || *out.AutoSaveEnabled != false {
 		t.Fatalf("explicit false should override true")
+	}
+}
+
+func TestMergeTerminalCommandsReplacesRegistryInConfiguredOrder(t *testing.T) {
+	parent := Settings{TerminalCommands: DefaultTerminalCommands()}
+	child := Settings{TerminalCommands: []TerminalCommandSettings{
+		{ID: "aider", Name: "Aider", Command: "aider --model sonnet", Enabled: true},
+		{ID: "codex", Name: "Codex Nightly", Command: "codex --full-auto", Enabled: false},
+	}}
+	out := Merge(parent, child)
+	if len(out.TerminalCommands) != 2 || out.TerminalCommands[0] != child.TerminalCommands[0] || out.TerminalCommands[1] != child.TerminalCommands[1] {
+		t.Fatalf("terminal commands should override: %#v", out)
+	}
+}
+
+func TestMergeTerminalCommandsPreservesExplicitlyEmptyRegistry(t *testing.T) {
+	child := Settings{TerminalCommands: []TerminalCommandSettings{}}
+	out := Merge(Settings{TerminalCommands: DefaultTerminalCommands()}, child)
+	if out.TerminalCommands == nil || len(out.TerminalCommands) != 0 {
+		t.Fatalf("explicit empty terminal registry should override defaults: %#v", out.TerminalCommands)
+	}
+}
+
+func TestWriteSettingsFilePreservesExplicitlyEmptyTerminalRegistry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := WriteSettingsFile(path, Settings{TerminalCommands: []TerminalCommandSettings{}}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := ReadSettingsFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TerminalCommands == nil || len(out.TerminalCommands) != 0 {
+		t.Fatalf("explicit empty terminal registry was not preserved: %#v", out.TerminalCommands)
+	}
+}
+
+func TestPrepareUserSettingsForWriteAcceptsUnboundedTerminalRegistry(t *testing.T) {
+	commands := make([]TerminalCommandSettings, 48)
+	for index := range commands {
+		commands[index] = TerminalCommandSettings{
+			ID:      fmt.Sprintf("cli-%d", index),
+			Name:    fmt.Sprintf("CLI %d", index),
+			Command: fmt.Sprintf("cli-%d --interactive", index),
+			Enabled: true,
+		}
+	}
+	prepared, err := PrepareUserSettingsForWrite(Settings{}, Settings{TerminalCommands: commands})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prepared.TerminalCommands) != len(commands) {
+		t.Fatalf("terminal registry was truncated: got=%d want=%d", len(prepared.TerminalCommands), len(commands))
+	}
+}
+
+func TestPrepareUserSettingsForWriteRejectsAmbiguousTerminalRegistry(t *testing.T) {
+	_, err := PrepareUserSettingsForWrite(Settings{}, Settings{TerminalCommands: []TerminalCommandSettings{
+		{ID: "aider", Name: "Aider", Command: "aider", Enabled: true},
+		{ID: "aider", Name: "Other", Command: "other", Enabled: true},
+	}})
+	if !errors.Is(err, ErrInvalidTerminalCommand) {
+		t.Fatalf("duplicate terminal IDs should fail with ErrInvalidTerminalCommand, got %v", err)
 	}
 }
 
@@ -436,7 +518,7 @@ func TestWriteSettingsFileFiltersNegativeAgentIdleTimeout(t *testing.T) {
 	}
 }
 
-func TestWriteSettingsFileAllowsUnlimitedAgentToolResultLimit(t *testing.T) {
+func TestWriteSettingsFileMapsZeroToolResultLimitToDefault(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "config.toml")
 	in := Settings{OpenAIModel: "abc", AgentToolResultLimitKB: intPtr(0)}
@@ -447,8 +529,8 @@ func TestWriteSettingsFileAllowsUnlimitedAgentToolResultLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.AgentToolResultLimitKB == nil || *out.AgentToolResultLimitKB != 0 {
-		t.Fatalf("agent tool result limit should preserve explicit 0, got %v", out.AgentToolResultLimitKB)
+	if out.AgentToolResultLimitKB == nil || *out.AgentToolResultLimitKB != DefaultAgentToolResultLimitKB {
+		t.Fatalf("agent tool result limit should persist the default, got %v", out.AgentToolResultLimitKB)
 	}
 }
 
@@ -521,7 +603,7 @@ func TestPrepareUserSettingsForWriteRejectsEnabledRemoteAccessWithoutCredentials
 	}
 }
 
-func TestLoadLayeredAppliesAllLayers(t *testing.T) {
+func TestLoadLayeredKeepsGeneralSettingsUserScopedAndAppliesWorkspaceAgentOverrides(t *testing.T) {
 	home := t.TempDir()
 	ws := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(ws, ".nova"), 0o755); err != nil {
@@ -529,7 +611,12 @@ func TestLoadLayeredAppliesAllLayers(t *testing.T) {
 	}
 
 	user := Settings{OpenAIModel: "user-model", MaxIteration: intPtr(20)}
-	wsCfg := Settings{OpenAIModel: "ws-model"}
+	wsCfg := Settings{
+		OpenAIModel: "ws-model",
+		AgentTools: AgentToolSettings{
+			IDE: AgentToolOverride{AgentToolShell: false},
+		},
+	}
 	if err := WriteSettingsFile(filepath.Join(home, "config.toml"), user); err != nil {
 		t.Fatal(err)
 	}
@@ -541,14 +628,89 @@ func TestLoadLayeredAppliesAllLayers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if layered.Effective.OpenAIModel != "ws-model" {
-		t.Fatalf("workspace should win: %s", layered.Effective.OpenAIModel)
+	if layered.Effective.OpenAIModel != "user-model" {
+		t.Fatalf("general settings should stay user-scoped: %s", layered.Effective.OpenAIModel)
 	}
 	if layered.Effective.MaxIteration == nil || *layered.Effective.MaxIteration != 20 {
 		t.Fatalf("user MaxIteration should inherit: %v", layered.Effective.MaxIteration)
 	}
 	if layered.User.OpenAIModel != "user-model" {
 		t.Fatalf("raw user should be preserved")
+	}
+	if layered.Workspace.OpenAIModel != "" {
+		t.Fatalf("workspace general setting should be filtered: %s", layered.Workspace.OpenAIModel)
+	}
+	if enabled, present := layered.Effective.AgentTools.IDE[AgentToolShell]; !present || enabled {
+		t.Fatalf("workspace Agent override should remain effective: %#v", layered.Effective.AgentTools.IDE)
+	}
+}
+
+func TestLoadLayeredPublishesResolvedAgentToolCatalogAndManifests(t *testing.T) {
+	novaDir := t.TempDir()
+	if err := WriteSettingsFile(UserConfigPath(novaDir), Settings{
+		AgentTools: AgentToolSettings{IDE: AgentToolOverride{AgentToolShell: false}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	layered, err := LoadLayered(novaDir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(layered.AgentToolCapabilities) != len(AgentToolCapabilities()) {
+		t.Fatalf("tool capability catalog length = %d, want %d", len(layered.AgentToolCapabilities), len(AgentToolCapabilities()))
+	}
+	ide, found := layered.ResolvedAgentToolManifests[AgentKindIDE]
+	if !found || len(ide) == 0 {
+		t.Fatalf("resolved IDE manifest is missing: %#v", layered.ResolvedAgentToolManifests)
+	}
+	shell, found := resolvedManifestCapability(ide, AgentToolShell)
+	if !found || shell.Allowed || shell.Availability != AgentToolAvailabilityUnavailable ||
+		shell.UnavailableReasonKey != AgentToolUnavailableDisabledByPolicy {
+		t.Fatalf("resolved IDE shell = %#v", shell)
+	}
+	wantShell := "bash"
+	if layered.Runtime.GOOS == "windows" {
+		wantShell = "pwsh"
+	}
+	if len(shell.ToolNames) != 1 || shell.ToolNames[0] != wantShell {
+		t.Fatalf("resolved shell tools = %#v, want [%s]", shell.ToolNames, wantShell)
+	}
+	for _, kind := range []string{AgentKindVersionSummary, AgentKindToolAgent} {
+		manifest, present := layered.ResolvedAgentToolManifests[kind]
+		if !present || manifest == nil || len(manifest) != 0 {
+			t.Fatalf("model-only manifest %q = %#v, present=%v", kind, manifest, present)
+		}
+	}
+}
+
+func TestLoadLayeredPublishesCanonicalResolvedAgentContexts(t *testing.T) {
+	novaDir := t.TempDir()
+	lowThreshold := 0.20
+	disableToolContext := false
+	if err := WriteSettingsFile(UserConfigPath(novaDir), Settings{
+		AgentContexts: AgentContextSettings{
+			Default: AgentContextOverride{CompactionThreshold: &lowThreshold},
+			IDE:     AgentContextOverride{ToolResultContextEnabled: &disableToolContext},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	layered, err := LoadLayered(novaDir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ide, found := layered.ResolvedAgentContexts[AgentKindIDE]
+	if !found {
+		t.Fatalf("resolved IDE context is missing: %#v", layered.ResolvedAgentContexts)
+	}
+	if ide.CompactionThreshold != 0.50 || ide.ToolResultContextEnabled {
+		t.Fatalf("resolved IDE context = %#v", ide)
+	}
+	for _, definition := range AgentKindDefinitions() {
+		if _, ok := layered.ResolvedAgentContexts[definition.Kind]; !ok {
+			t.Fatalf("resolved context is missing agent kind %q", definition.Kind)
+		}
 	}
 }
 
@@ -575,8 +737,91 @@ func TestLoadLayeredIgnoresNovaDirFromEditableLayers(t *testing.T) {
 	if layered.Effective.NovaDir != normalizePath(home) {
 		t.Fatalf("editable layers should not override startup nova_dir: %q", layered.Effective.NovaDir)
 	}
-	if layered.Effective.OpenAIModel != "ws-model" {
-		t.Fatalf("other editable fields should still merge: %q", layered.Effective.OpenAIModel)
+	if layered.Effective.OpenAIModel != "user-model" {
+		t.Fatalf("workspace general fields should not override user settings: %q", layered.Effective.OpenAIModel)
+	}
+}
+
+func TestPrepareWorkspaceAgentSettingsForWritePreservesLegacyGeneralValues(t *testing.T) {
+	existing := Settings{
+		OpenAIModel: "legacy-workspace-model",
+		AgentTools: AgentToolSettings{
+			IDE: AgentToolOverride{AgentToolShell: true},
+		},
+	}
+	incoming := Settings{
+		OpenAIModel: "ignored-new-model",
+		AgentModels: AgentModelSettings{
+			IDE: AgentModelOverride{ProfileID: "ignored-workspace-profile"},
+		},
+		AgentTools: AgentToolSettings{
+			IDE: AgentToolOverride{AgentToolShell: false},
+		},
+	}
+
+	prepared := PrepareWorkspaceAgentSettingsForWrite(existing, incoming)
+	if prepared.OpenAIModel != "legacy-workspace-model" {
+		t.Fatalf("legacy general value should remain reversible on disk: %q", prepared.OpenAIModel)
+	}
+	if prepared.AgentModels.IDE.ProfileID != "" {
+		t.Fatalf("workspace model selection must remain user-scoped: %#v", prepared.AgentModels)
+	}
+	if enabled, present := prepared.AgentTools.IDE[AgentToolShell]; !present || enabled {
+		t.Fatalf("workspace Agent override should be replaced: %#v", prepared.AgentTools.IDE)
+	}
+}
+
+func TestWorkspaceSettingsCannotOverrideUserSafetyOrShellEnvironment(t *testing.T) {
+	prepared := PrepareWorkspaceAgentSettingsForWrite(Settings{}, Settings{
+		AgentApprovalMode:     AgentApprovalFullAccess,
+		ShellEnvironmentMode:  ShellEnvironmentProcess,
+		ShellEnvironmentShell: "/tmp/untrusted-shell",
+		AgentBashPath:         "/tmp/untrusted-bash",
+		AgentPrompts: AgentPromptSettings{
+			IDE: AgentPromptOverride{SystemPrompt: "workspace prompt"},
+		},
+	})
+	if prepared.AgentApprovalMode != "" || prepared.ShellEnvironmentMode != "" ||
+		prepared.ShellEnvironmentShell != "" || prepared.AgentBashPath != "" {
+		t.Fatalf("workspace retained user-owned execution settings: %#v", prepared)
+	}
+	if prepared.AgentPrompts.IDE.SystemPrompt != "workspace prompt" {
+		t.Fatalf("workspace Agent customization was lost: %#v", prepared.AgentPrompts)
+	}
+}
+
+func TestLoadLayeredIgnoresPersistedWorkspaceSafetyOrShellEnvironment(t *testing.T) {
+	novaDir := t.TempDir()
+	workspace := t.TempDir()
+	if err := WriteSettingsFile(UserConfigPath(novaDir), Settings{
+		AgentApprovalMode:     AgentApprovalAsk,
+		ShellEnvironmentMode:  ShellEnvironmentAuto,
+		ShellEnvironmentShell: "/bin/zsh",
+		AgentBashPath:         "/bin/bash",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteSettingsFile(WorkspaceConfigPath(workspace), Settings{
+		AgentApprovalMode:     AgentApprovalFullAccess,
+		ShellEnvironmentMode:  ShellEnvironmentProcess,
+		ShellEnvironmentShell: "/tmp/untrusted-shell",
+		AgentBashPath:         "/tmp/untrusted-bash",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	layered, err := LoadLayered(novaDir, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if layered.Effective.AgentApprovalMode != AgentApprovalAsk ||
+		layered.Effective.ShellEnvironmentMode != ShellEnvironmentAuto ||
+		layered.Effective.ShellEnvironmentShell != "/bin/zsh" ||
+		layered.Effective.AgentBashPath != "/bin/bash" {
+		t.Fatalf("workspace changed user execution settings: %#v", layered.Effective)
+	}
+	if layered.Workspace.AgentApprovalMode != "" || layered.Workspace.ShellEnvironmentMode != "" ||
+		layered.Workspace.ShellEnvironmentShell != "" || layered.Workspace.AgentBashPath != "" {
+		t.Fatalf("workspace safety settings leaked into public layer: %#v", layered.Workspace)
 	}
 }
 
@@ -611,6 +856,35 @@ func TestLoadLayeredIgnoresStartupPortsFromWorkspaceLayer(t *testing.T) {
 	}
 	if !strings.HasSuffix(layered.Access.LocalURL, ":18080") || !strings.HasSuffix(layered.Access.LANURL, ":18080") {
 		t.Fatalf("access URLs should use backend_port: %+v", layered.Access)
+	}
+}
+
+func TestLoadLayeredIgnoresAgentModelsFromWorkspaceLayer(t *testing.T) {
+	home := t.TempDir()
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, ".nova"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteSettingsFile(filepath.Join(home, "config.toml"), Settings{
+		AgentModels: AgentModelSettings{InteractiveStory: AgentModelOverride{ProfileID: "user-model"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteSettingsFile(filepath.Join(ws, ".nova", "config.toml"), Settings{
+		AgentModels: AgentModelSettings{InteractiveStory: AgentModelOverride{ProfileID: "workspace-model"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	layered, err := LoadLayered(home, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if layered.Workspace.AgentModels.InteractiveStory.ProfileID != "" {
+		t.Fatalf("workspace agent model should be filtered: %#v", layered.Workspace.AgentModels)
+	}
+	if layered.Effective.AgentModels.InteractiveStory.ProfileID != "user-model" {
+		t.Fatalf("user agent model should remain effective: %#v", layered.Effective.AgentModels)
 	}
 }
 
@@ -662,5 +936,30 @@ func TestLoadLayeredIgnoresLLMInputLogFromWorkspaceLayer(t *testing.T) {
 	}
 	if layered.Effective.LLMInputLogEnabled == nil || *layered.Effective.LLMInputLogEnabled {
 		t.Fatalf("workspace llm input log should not become effective: %#v", layered.Effective.LLMInputLogEnabled)
+	}
+}
+
+func TestLoadLayeredIgnoresTraceDebugSettingsFromWorkspaceLayer(t *testing.T) {
+	home := t.TempDir()
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, ".nova"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("trace_capture_level = \"debug\"\ntrace_exporter = \"local\"\ntrace_retention_runs = 7\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, ".nova", "config.toml"), []byte("trace_capture_level = \"off\"\ntrace_exporter = \"otlp\"\ntrace_retention_runs = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	layered, err := LoadLayered(home, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if layered.Workspace.TraceCaptureLevel != "" || layered.Workspace.TraceExporter != "" || layered.Workspace.TraceRetentionRuns != nil {
+		t.Fatalf("workspace trace debug settings should be filtered: %#v", layered.Workspace)
+	}
+	if layered.Effective.TraceCaptureLevel != "debug" || layered.Effective.TraceExporter != "local" || layered.Effective.TraceRetentionRuns == nil || *layered.Effective.TraceRetentionRuns != 7 {
+		t.Fatalf("user trace debug settings should remain effective: %#v", layered.Effective)
 	}
 }

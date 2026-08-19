@@ -6,8 +6,15 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 )
+
+// DisplayTimeFormat is the canonical user-facing timestamp layout shared across
+// the project. Persisting or surfacing times through a single layout keeps
+// displays consistent and avoids the same magic string being re-decided in
+// every package.
+const DisplayTimeFormat = "2006-01-02 15:04"
 
 // WorkspaceSummary 汇总当前作品的写作进度。
 type WorkspaceSummary struct {
@@ -66,6 +73,9 @@ type chapterSortKey struct {
 
 // Summary 统计 workspace 的章节进度和书籍元信息。
 func (s *Service) Summary() (WorkspaceSummary, error) {
+	s.summaryMu.Lock()
+	defer s.summaryMu.Unlock()
+
 	meta := ReadBookMetaFromDir(s.workspace)
 	summary := WorkspaceSummary{
 		Title:        meta.Title,
@@ -79,11 +89,14 @@ func (s *Service) Summary() (WorkspaceSummary, error) {
 
 	chapterRoot := filepath.Join(s.workspace, "chapters")
 	if _, err := os.Stat(chapterRoot); os.IsNotExist(err) {
+		s.chapters = make(map[string]cachedChapterSummary)
+		s.invalidatedChapters = make(map[string]struct{})
 		return summary, nil
 	} else if err != nil {
 		return summary, err
 	}
 	confirmedChapters := s.chapterConfirmedMap()
+	nextCache := make(map[string]cachedChapterSummary, len(s.chapters))
 
 	err := filepath.WalkDir(chapterRoot, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
@@ -100,10 +113,6 @@ func (s *Service) Summary() (WorkspaceSummary, error) {
 			return nil
 		}
 
-		data, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return nil
-		}
 		info, statErr := entry.Info()
 		if statErr != nil {
 			return nil
@@ -112,26 +121,29 @@ func (s *Service) Summary() (WorkspaceSummary, error) {
 		if relErr != nil {
 			return nil
 		}
-		words := countWritingWords(string(data))
-		confirmed := words > 0 && confirmedChapters[filepath.ToSlash(rel)]
-		chapter := ChapterSummary{
-			Path:         filepath.ToSlash(rel),
-			FileName:     name,
-			DisplayTitle: chapterDisplayTitle(name),
-			Index:        chapterIndex(name),
-			Words:        words,
-			Status:       chapterStatus(words, confirmed),
-			Confirmed:    confirmed,
-			UpdatedAt:    info.ModTime().Format("2006-01-02 15:04"),
+		relPath := filepath.ToSlash(rel)
+		stamp := chapterFileStamp{Size: info.Size(), ModifiedNS: info.ModTime().UnixNano()}
+		cached, reusable := s.chapters[relPath]
+		chapter := cached.Summary
+		if !reusable || cached.Stamp != stamp || s.chapterSummaryInvalidated(relPath) {
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil
+			}
+			chapter = newChapterSummary(relPath, name, info, countWritingWords(string(data)))
 		}
-		chapter.Volume, chapter.VolumePath = chapterVolume(chapter.Path)
+		chapter.Confirmed = chapter.Words > 0 && confirmedChapters[relPath]
+		chapter.Status = chapterStatus(chapter.Words, chapter.Confirmed)
+		nextCache[relPath] = cachedChapterSummary{Stamp: stamp, Summary: chapter}
 		summary.Chapters = append(summary.Chapters, chapter)
-		summary.TotalWords += words
+		summary.TotalWords += chapter.Words
 		return nil
 	})
 	if err != nil {
 		return summary, err
 	}
+	s.chapters = nextCache
+	s.invalidatedChapters = make(map[string]struct{})
 
 	sort.Slice(summary.Chapters, func(i, j int) bool {
 		left, right := summary.Chapters[i], summary.Chapters[j]
@@ -142,6 +154,42 @@ func (s *Service) Summary() (WorkspaceSummary, error) {
 	})
 	summary.ChapterCount = len(summary.Chapters)
 	return summary, nil
+}
+
+func (s *Service) chapterSummaryInvalidated(path string) bool {
+	for {
+		if _, invalidated := s.invalidatedChapters[path]; invalidated {
+			return true
+		}
+		separator := strings.LastIndexByte(path, '/')
+		if separator < 0 {
+			return false
+		}
+		path = path[:separator]
+	}
+}
+
+type chapterFileStamp struct {
+	Size       int64
+	ModifiedNS int64
+}
+
+type cachedChapterSummary struct {
+	Stamp   chapterFileStamp
+	Summary ChapterSummary
+}
+
+func newChapterSummary(relPath, name string, info os.FileInfo, words int) ChapterSummary {
+	chapter := ChapterSummary{
+		Path:         relPath,
+		FileName:     name,
+		DisplayTitle: chapterDisplayTitle(name),
+		Index:        chapterIndex(name),
+		Words:        words,
+		UpdatedAt:    info.ModTime().UTC().Format(time.RFC3339),
+	}
+	chapter.Volume, chapter.VolumePath = chapterVolume(chapter.Path)
+	return chapter
 }
 
 func (s *Service) documentPreview(relPath, fallbackTitle string) *DocumentPreview {
@@ -160,7 +208,7 @@ func (s *Service) documentPreview(relPath, fallbackTitle string) *DocumentPrevie
 		Title:     documentTitle(content, fallbackTitle, relPath),
 		Excerpt:   documentExcerpt(content),
 		Words:     countWritingWords(content),
-		UpdatedAt: info.ModTime().Format("2006-01-02 15:04"),
+		UpdatedAt: info.ModTime().UTC().Format(time.RFC3339),
 	}
 }
 

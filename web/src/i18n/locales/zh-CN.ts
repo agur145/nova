@@ -15,6 +15,7 @@ import novelImport from './zh-CN/novelImport'
 import router from './zh-CN/router'
 import planning from './zh-CN/planning'
 import lore from './zh-CN/lore'
+import loreWorkspace from './zh-CN/loreWorkspace'
 import locale from './zh-CN/locale'
 import layout from './zh-CN/layout'
 import agents from './zh-CN/agents'
@@ -26,8 +27,7 @@ import storyPicker from './zh-CN/storyPicker'
 import branchTimeline from './zh-CN/branchTimeline'
 import storyStage from './zh-CN/storyStage'
 import snapshot from './zh-CN/snapshot'
-import memoryPanel from './zh-CN/memoryPanel'
-import storyMemory from './zh-CN/storyMemory'
+import directorPanel from './zh-CN/directorPanel'
 import settings from './zh-CN/settings'
 import time from './zh-CN/time'
 import versions from './zh-CN/versions'
@@ -37,6 +37,13 @@ import skills from './zh-CN/skills'
 import automations from './zh-CN/automations'
 import messages from './zh-CN/messages'
 import onboarding from './zh-CN/onboarding'
+import changes from './zh-CN/changes'
+import narrativeStyle from './zh-CN/narrativeStyle'
+import agentChat from './zh-CN/agentChat'
+import agentApproval from './zh-CN/agentApproval'
+import files from './zh-CN/files'
+import continualLearning from './zh-CN/continualLearning'
+import trajectory from './zh-CN/trajectory'
 
 const zhCN = {
   ...common,
@@ -56,6 +63,7 @@ const zhCN = {
   ...router,
   ...planning,
   ...lore,
+  ...loreWorkspace,
   ...locale,
   ...layout,
   ...agents,
@@ -67,8 +75,7 @@ const zhCN = {
   ...branchTimeline,
   ...storyStage,
   ...snapshot,
-  ...memoryPanel,
-  ...storyMemory,
+  ...directorPanel,
   ...settings,
   ...time,
   ...versions,
@@ -78,6 +85,14 @@ const zhCN = {
   ...automations,
   ...messages,
   ...onboarding,
+  ...changes,
+  ...narrativeStyle,
+  ...agentChat,
+  ...agentApproval,
+  ...files,
+  ...continualLearning,
+  ...trajectory,
+  'agents.tool.availability.runtimeCheck': '运行时检查',
 } as const
 
 export default zhCN

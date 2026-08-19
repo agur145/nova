@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>Denova is an AI creative platform for novel writing and story-driven games, powered by AI Agents, Skills, Subagent Workflows, Automations, image generation, and versioned project workspaces.</strong>
+  <strong>Denova is an AI creative platform for novel writing and AI generated RPG, with built-in support for AI agents, Skills, subagent workflows, automations, image generation, and version control.</strong>
 </p>
 
 <p align="center">
@@ -11,6 +11,7 @@
 </p>
 
 <p align="center">
+  <a href="https://discord.gg/QuHu2aPya"><img src="https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white" alt="Join the Denova Discord" /></a>
   <a href="https://github.com/alfredxw/denova/releases"><img alt="Release" src="https://img.shields.io/github/v/release/alfredxw/denova?style=flat-square"></a>
   <a href="./LICENSE"><img alt="License" src="https://img.shields.io/github/license/alfredxw/denova?style=flat-square"></a>
   <img alt="Go" src="https://img.shields.io/badge/Go-1.26%2B-00ADD8?style=flat-square&logo=go&logoColor=white">
@@ -18,7 +19,7 @@
 </p>
 
 <p align="center">
-  Current version: <strong>v0.1.18</strong> (2026-07-01) · Beta
+  Current version: <strong>v0.3.3</strong> (2026-07-25) · Beta
 </p>
 
 ![Denova Writing Mode](./img/ide.png)
@@ -52,19 +53,23 @@ You can start from an original idea, import an existing novel for fan fiction, a
 
 ## Core Features
 
-- **Writing Mode**: fiction-focused Markdown editing, multiple tabs, global search, chapter statistics, outlines, chapter-group plans, progress tracking, and existing novel import.
-- **Creative Agents**: read selections, files, and lore; call tools to generate or edit chapters; and use Skills / SubAgents for different writing tasks, prose styles, and workflows.
-- **Game Mode**: run interactive text adventures with player input, story branches, storyline switching, action suggestions, scene memory, and long-term story memory.
-- **Lore and presets**: maintain durable settings such as characters, worlds, locations, factions, rules, and items; reuse narrative presets and image presets across Writing Mode and Game Mode.
+- **Writing Mode**: fiction-focused Markdown editing, multiple tabs, regex find and replace, recoverable workspace-wide replacement, chapter statistics, outlines, chapter-group plans, progress tracking, document comments, Change Review, and existing novel import.
+- **Creative Agents**: read selections, files, lore, and trusted review feedback; call tools to generate or edit chapters; and use Skills / SubAgents for different writing tasks, prose styles, and workflows. General tools use the compact `read / write / edit / glob / grep / bash|pwsh / web_search / web_fetch / browser / todo / ask / skill / task` interfaces. Writes still enter the cumulative diff for review, comments, and undo.
+- **Game Mode**: run interactive text adventures with player input, story branches, storyline switching, Background Director schedules, action suggestions, saved AI reply corrections, searchable Turn history, replayable Actor archive/restore, customizable state layouts, and a full-screen Director Desk for goals, pressure, costs, event card packs, and rule checks.
+- **Lore and presets**: maintain durable settings such as characters, worlds, locations, factions, rules, and items; narrative styles handle prose, prompt slots, and scene style rules, while Story Directors can plug together narrative styles, event packages, TRPG Checks, State Systems, and image presets, with each module independently switchable. State Systems also provide reusable trait libraries whose templates define draw rules for each kind of Actor.
 - **Image creation**: generate chapter illustrations, interactive images, and book covers through OpenAI-compatible image model profiles, with previews and result management in the UI.
-- **Context management**: progressively assemble model context, compact long memories, improve cache reuse, and keep tool results bounded to reduce noise and token cost.
-- **Versions and restore**: save local versions, inspect diffs, restore history, and enable timed saves or automatic saves after large Agent outputs.
+- **Context management**: progressively assemble model context, inspect and copy its sources, build source-linked history checkpoints, improve cache reuse, and keep tool results bounded to reduce noise and token cost.
+- **Versions and restore**: save local versions, inspect diffs, restore history, use restart-safe undo/redo for Agent workspace changes, and enable timed saves or automatic saves after large Agent outputs.
 - **Automation**: schedule tasks, reviews, auto-continuation, and custom Prompt workflows.
 - **Product experience**: Chinese and English UI, light and dark themes, OpenAI-compatible model setup, remote access, PWA phone usage, and Windows / macOS / Linux support.
 
 ## Writing Mode and Game Mode
 
-Denova has two parallel workspaces. Writing Mode focuses on the fiction production line: ideas, settings, outlines, chapter plans, prose, and progress. Game Mode focuses on playable interactive narrative: player actions, story branches, scene memory, storylines, and choice-driven progression.
+Denova has two parallel workspaces. Writing Mode focuses on the fiction production line: ideas, settings, outlines, chapter plans, prose, and progress. Game Mode focuses on playable interactive narrative: player actions, story branches, Turn history, Actor State, storylines, and choice-driven progression.
+
+Game Mode includes a built-in Story Director that prepares the opening stage from the story setup and lore library, choosing the key characters, factions, clues, risks, and near-term branches that can make the first scene immediately playable. As the story continues, it responds to player choices while keeping character motives, world rules, relationships, and foreshadowing coherent. Important characters, locations, factions, and rules from the lore library are given priority, so established creative material becomes part of the adventure. Each turn aims to deliver meaningful information, relationship movement, pressure, reward, cost, or a fresh hook, then leaves the player with clear ways to continue.
+
+Creators can freely combine narrative styles, event packages, TRPG Checks, State Systems, and image presets, or disable any module that a story does not need. Event packages give the Director optional story material to seed, develop, resolve, or abandon. State Systems adapt to the actual opening and track lasting changes such as attributes, resources, relationships, injuries, and traits; TRPG Checks add fixed-d20 rules and state-based modifiers. Committed Turns are the source of historical facts, Actor State owns current computable facts, Lore owns stable canon, and `director.md` owns future intent. Agents can recover older facts through bounded Turn-history search without maintaining a second writable source of truth. The full-screen Director Desk centralizes plans, events, and execution audit, while the state-aware sidebar keeps actor and world changes visible. Saved AI replies can also be corrected directly without regenerating a turn.
 
 The two modes share durable creative assets such as lore, presets, model and Agent configuration, Skills, version management, and base settings. Writing progress and chapter plans do not automatically enter Game Mode. If an interactive story should reference a passage or current writing milestone, move stable information into lore first or reference it explicitly in the input.
 
@@ -72,35 +77,35 @@ The two modes share durable creative assets such as lore, presets, model and Age
 
 Denova is iterating quickly. Feedback, bug reports, usage notes, and workflow discussions are welcome.
 
+Join the [Discord community](https://discord.gg/QuHu2aPya) to connect with other creators.
+
 <p align="center">
-  <img src="./img/wechat.png" alt="WeChat group" width="240">
+  <img src="./img/wechat.jpg" alt="WeChat group" width="240">
 </p>
 
 ## Quick Start
 
-### Download a Release
-
-Download the archive for your platform from [GitHub Releases](https://github.com/alfredxw/denova/releases), extract it, and run:
+One-command install for macOS / Linux:
 
 ```bash
-./denova
+curl -fsSL https://raw.githubusercontent.com/alfredxw/denova/master/scripts/install.sh | sh
 ```
 
-Windows users should run `denova.exe`. On macOS, if the system blocks the app for security reasons, run:
+Run `denova` after installation.
 
-```bash
-xattr -dr com.apple.quarantine denova
-```
+You can also download the package for your platform manually from [GitHub Releases](https://github.com/alfredxw/denova/releases). The script supports macOS and Linux only; Windows users must download the Release manually and run `denova.exe`.
+
+Release archives include a SHA-256-verified ripgrep binary, so no separate installation is needed. Denova's `grep` tool prefers this bundled version.
 
 ### Run from Source
 
-Requires Go 1.26+, Node.js 20+, and pnpm.
+Development startup requires Go 1.26.6+, Node.js 20+, pnpm, and ripgrep available on PATH. The distributable directory produced by `scripts/build.sh` downloads and bundles the pinned version automatically.
 
 ```bash
 git clone https://github.com/alfredxw/denova.git
 cd denova
 corepack enable
-./bootstrap.sh
+./scripts/bootstrap.sh
 ```
 
 Default addresses:
@@ -108,44 +113,9 @@ Default addresses:
 - Frontend: `http://localhost:5173`
 - Backend: `http://localhost:8080`
 
-### Option 3: Docker Deployment
-
-Requires Docker or Docker Compose. Copy the environment template first and set the remote access credentials:
-
-```bash
-cp .env.docker.example .env
-```
-
-Edit `.env` and at least change:
-
-```bash
-DENOVA_REMOTE_ACCESS_USERNAME=denova
-DENOVA_REMOTE_ACCESS_PASSWORD=change-this-password
-```
-
-Start Nova:
-
-```bash
-docker compose up -d --build
-```
-
-Open:
-
-```text
-http://localhost:8080
-```
-
-Devices on the same LAN can open:
-
-```text
-http://<host-LAN-IP>:8080
-```
-
-Docker deployment uses the release static frontend and does not start Vite. The container data directory is `/data`, persisted by the Docker volume `denova-data` by default; user-level settings are written to `/data/.denova`. To pin a specific book workspace, add `DENOVA_WORKSPACE=/data/workspace` in `docker-compose.yml` and mount the host directory to that path.
-
 ## Models and Configuration
 
-Denova uses an OpenAI-compatible API. The recommended path is to configure language models, image models, Agent parameters, the default Writing Skill, editor options, Game Mode behavior, version management, language, theme, and fonts from Settings.
+Denova configures language-model providers independently from API protocols. Providers are selected from the built-in catalog, while protocols are limited to OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages. For a custom endpoint, choose Compatible / Custom Endpoint, then set its protocol and Base URL; Gemini uses Google's official OpenAI-compatible endpoint. OpenAI defaults to Responses, DeepSeek offers Chat Completions, Responses, and Anthropic routes, and MiniMax defaults to the Anthropic route so thinking blocks can be continued intact. Settings can load model suggestions through the current protocol's OpenAI-compatible or Anthropic `/models` endpoint while keeping the model name fully editable, and can test the current unsaved profile with one minimal real generation request. Legacy `openai_*` fields in `model_profiles` and the `OPENAI_*` environment variables below remain compatible Chat Completions settings. The recommended path is to configure language models, image models, Agent parameters, the default Writing Skill, editor options, Game Mode behavior, version management, language, theme, and fonts from Settings.
 
 For scripted startup or deployment, you can also override model configuration with environment variables:
 
@@ -167,18 +137,19 @@ export DENOVA_SKILLS_DIR="./skills"
 export DENOVA_WEB_DIR="./web"
 export DENOVA_BACKEND_PORT="8080"
 export DENOVA_FRONTEND_PORT="5173"
-export DENOVA_ALLOW_LAN_ACCESS="true"
-export DENOVA_REMOTE_ACCESS_USERNAME="denova"
-export DENOVA_REMOTE_ACCESS_PASSWORD="your-remote-password"
 ```
 
 Configuration precedence:
 
 ```text
-Built-in defaults < global config.toml < user-level config < workspace-level config < environment variables
+Built-in defaults < global config.toml < user-level config < environment variables
 ```
 
-Legacy workspaces and environment variables are still read for compatibility; new configuration should use `.denova` / `DENOVA_*`.
+Common, Writing Mode, and Game Mode preferences from Settings are now stored uniformly at the user level. A workspace `.denova/config.toml` only carries workspace customizations explicitly exposed by the Agents page; other legacy fields remain on disk but no longer override user settings. Legacy environment variables are still read for compatibility; new configuration should use `.denova` / `DENOVA_*`.
+
+Parallel read-tool execution is configurable from Settings or Agents, defaults to 8, and accepts 1–64; a workspace value overrides the user value. It applies only to consecutive read-only tools—workspace writes and child tools remain strictly ordered.
+
+The Agents page renders each Agent's actual permissions from the backend-resolved capability manifest instead of maintaining a second frontend default matrix. Effective permissions are the intersection of the Agent kind's hard capability ceiling and configured overrides; `runtime_check` marks a conditional capability and does not guarantee that a concrete tool is registered for the current run. `shell` resolves to `bash` or `pwsh` for the current platform, and Web Search and Web Fetch can be authorized independently. Configuration management is consolidated into `config_read` / `config_apply`, with resource workflows loaded on demand from the built-in `config-manager` Skill references.
 
 ## Remote Access and Phone Usage
 
@@ -200,25 +171,63 @@ denova.example.com {
 }
 ```
 
+## Docker Deployment
+
+`master-docker` provides a multi-stage Docker build: it compiles the Go backend, builds the Vite frontend, and serves both `/` and `/api` from one backend process. Runtime data, user settings, project indexes, project state, and logs are stored under `/data`, persisted by the `denova-data` Docker volume by default.
+
+The target machine needs Docker Engine and Docker Compose v2. Deploy it with:
+
+```bash
+git clone --branch master-docker https://github.com/alfredxw/denova.git
+cd denova
+cp .env.docker.example .env
+chmod 600 .env
+# Edit .env. At minimum, replace DENOVA_REMOTE_ACCESS_PASSWORD and set model API values as needed.
+docker compose up -d --build
+docker compose ps
+docker compose logs -f denova
+```
+
+Open `http://<server-ip>:8080` after startup. Change the host port with `DENOVA_HOST_PORT` in `.env`. Leave `DENOVA_WORKSPACE` empty to select or create projects in the UI; when set, it must be a container path such as `/data/projects/default`. Do not put a host path in `DENOVA_WORKSPACE` unless that path is mounted into the container.
+
+Compose enables LAN access and uses the Basic Auth username and password from `.env`. Before exposing the service publicly, terminate HTTPS with Caddy / Nginx and expose only the reverse-proxy port. Do not use the example password in production.
+
+Common maintenance commands:
+
+```bash
+docker compose build --pull
+docker compose up -d --build
+docker compose logs -f denova
+docker compose down
+```
+
+`docker compose down` does not remove `denova-data`. Removing the data requires the explicit `docker volume rm denova-data` command; back it up first.
+
 ## Development
 
 Start both frontend and backend:
 
 ```bash
-./bootstrap.sh
+./scripts/bootstrap.sh
 ```
 
 Start frontend or backend separately:
 
 ```bash
-./bootstrap.sh fe
-./bootstrap.sh be
+./scripts/bootstrap.sh fe
+./scripts/bootstrap.sh be
+```
+
+Stop the Denova backend running from this repository and restart it in the foreground:
+
+```bash
+./scripts/restart-backend.sh
 ```
 
 Allow LAN devices to access the frontend dev server:
 
 ```bash
-./bootstrap.sh fe --lan
+./scripts/bootstrap.sh fe --lan
 ```
 
 ## Donate QR Code
@@ -229,15 +238,6 @@ Allow LAN devices to access the frontend dev server:
   <img src="./img/donate.png" alt="Donate" width="240">
 </p>
 
-## Star History
-
-<a href="https://www.star-history.com/#alfredxw/denova&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=alfredxw/denova&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=alfredxw/denova&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=alfredxw/denova&type=date&legend=top-left" />
- </picture>
-</a>
 
 ## License
 

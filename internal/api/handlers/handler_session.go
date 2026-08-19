@@ -2,48 +2,19 @@ package handlers
 
 import (
 	"context"
-	"log"
+	"fmt"
+	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
+	"denova/internal/api/agentui"
+	appsvc "denova/internal/app"
 	"denova/internal/restart"
-	"denova/internal/session"
 )
-
-// messageDTO 消息 DTO，type=clear 时表示上下文清理分界。
-type messageDTO struct {
-	Type                 string                       `json:"type"`
-	ID                   string                       `json:"id,omitempty"`
-	Role                 string                       `json:"role,omitempty"`
-	Content              string                       `json:"content,omitempty"`
-	Name                 string                       `json:"name,omitempty"`
-	Args                 string                       `json:"args,omitempty"`
-	Status               string                       `json:"status,omitempty"`
-	Result               string                       `json:"result,omitempty"`
-	Illustration         *session.ChapterIllustration `json:"illustration,omitempty"`
-	CreatedAt            string                       `json:"created_at,omitempty"`
-	RunID                string                       `json:"run_id,omitempty"`
-	AgentKind            string                       `json:"agent_kind,omitempty"`
-	AgentName            string                       `json:"agent_name,omitempty"`
-	RootAgentName        string                       `json:"root_agent_name,omitempty"`
-	RunPath              []string                     `json:"run_path,omitempty"`
-	SubAgent             bool                         `json:"subagent,omitempty"`
-	SubAgentSessionID    string                       `json:"subagent_session_id,omitempty"`
-	SubAgentType         string                       `json:"subagent_type,omitempty"`
-	PromptTokens         int                          `json:"prompt_tokens,omitempty"`
-	CachedPromptTokens   int                          `json:"cached_prompt_tokens,omitempty"`
-	UncachedPromptTokens int                          `json:"uncached_prompt_tokens,omitempty"`
-	CacheHitRate         float64                      `json:"cache_hit_rate,omitempty"`
-	CompletionTokens     int                          `json:"completion_tokens,omitempty"`
-	ReasoningTokens      int                          `json:"reasoning_tokens,omitempty"`
-	TotalTokens          int                          `json:"total_tokens,omitempty"`
-	ModelCalls           int                          `json:"model_calls,omitempty"`
-	GeneratedBytes       int                          `json:"generated_bytes,omitempty"`
-	UsageCalls           []session.TokenUsageCall     `json:"usage_calls,omitempty"`
-}
 
 // sessionDTO 会话摘要 DTO。
 type sessionDTO struct {
@@ -68,19 +39,70 @@ type sessionRenameRequest struct {
 	Title string `json:"title"`
 }
 
+const maxSessionMessagePageSize = 500
+
+type sessionMessagesPageDTO struct {
+	Messages []agentui.Message      `json:"messages"`
+	Page     sessionMessagePageMeta `json:"page"`
+}
+
+type sessionMessagePageMeta struct {
+	NextBefore string `json:"next_before"`
+	HasMore    bool   `json:"has_more"`
+	Total      int    `json:"total"`
+}
+
 // handleSessionMessages GET /api/session/messages — 返回当前或指定会话历史消息。
 func (h *Handlers) HandleSessionMessages(ctx context.Context, c *app.RequestContext) {
+	limitRaw := strings.TrimSpace(c.Query("limit"))
 	if !h.app.HasWorkspace() {
-		writeJSON(c, consts.StatusOK, []messageDTO{})
+		if limitRaw != "" {
+			writeJSON(c, consts.StatusOK, sessionMessagesPageDTO{Messages: []agentui.Message{}})
+			return
+		}
+		writeJSON(c, consts.StatusOK, []agentui.Message{})
 		return
 	}
 	id := strings.TrimSpace(c.Query("session_id"))
-	entries, err := h.app.SessionMessages(id)
+	if limitRaw == "" {
+		entries, err := h.app.SessionMessages(id)
+		if err != nil {
+			writeError(c, consts.StatusNotFound, err.Error())
+			return
+		}
+		writeJSON(c, consts.StatusOK, agentui.MessagesFromHistory(entries))
+		return
+	}
+	limit, parseErr := strconv.Atoi(limitRaw)
+	if parseErr != nil || limit <= 0 {
+		writeErrorKey(c, consts.StatusBadRequest, "api.common.invalidQuery")
+		return
+	}
+	if limit > maxSessionMessagePageSize {
+		limit = maxSessionMessagePageSize
+	}
+	before := -1
+	if beforeRaw := strings.TrimSpace(c.Query("before")); beforeRaw != "" {
+		parsedBefore, beforeErr := strconv.Atoi(beforeRaw)
+		if beforeErr != nil || parsedBefore < 0 {
+			writeErrorKey(c, consts.StatusBadRequest, "api.common.invalidQuery")
+			return
+		}
+		before = parsedBefore
+	}
+	page, err := h.app.SessionMessagesPage(ctx, id, before, limit)
 	if err != nil {
 		writeError(c, consts.StatusNotFound, err.Error())
 		return
 	}
-	writeJSON(c, consts.StatusOK, historyEntriesToMessageDTOs(entries))
+	writeJSON(c, consts.StatusOK, sessionMessagesPageDTO{
+		Messages: agentui.MessagesFromHistoryAtOffset(page.Entries, page.NextBefore),
+		Page: sessionMessagePageMeta{
+			NextBefore: strconv.Itoa(page.NextBefore),
+			HasMore:    page.HasMore,
+			Total:      page.Total,
+		},
+	})
 }
 
 // handleSessions GET /api/sessions — 返回当前 workspace 下的会话列表。
@@ -178,8 +200,8 @@ var scheduleRestart = restart.ScheduleCurrentProcess
 
 // handleRestart POST /api/restart — 重启 Nova 服务并重新加载配置。
 func (h *Handlers) HandleRestart(ctx context.Context, c *app.RequestContext) {
-	if err := scheduleRestart(restart.DefaultDelay); err != nil {
-		log.Printf("[restart] schedule failed err=%v", err)
+	if err := scheduleRestart(ctx, restart.DefaultDelay); err != nil {
+		slog.ErrorContext(ctx, fmt.Sprintf("[restart] schedule failed err=%v", err))
 		writeError(c, consts.StatusInternalServerError, err.Error())
 		return
 	}
@@ -195,7 +217,7 @@ func (h *Handlers) HandleStatus(ctx context.Context, c *app.RequestContext) {
 	})
 }
 
-func toSessionDTOs(metas []session.SessionMeta) []sessionDTO {
+func toSessionDTOs(metas []appsvc.AgentSessionMeta) []sessionDTO {
 	result := make([]sessionDTO, 0, len(metas))
 	for _, meta := range metas {
 		result = append(result, sessionDTO{
@@ -210,54 +232,7 @@ func toSessionDTOs(metas []session.SessionMeta) []sessionDTO {
 	return result
 }
 
-func historyEntriesToMessageDTOs(entries []session.HistoryEntry) []messageDTO {
-	result := make([]messageDTO, 0, len(entries))
-	for _, entry := range entries {
-		if entry.Type == "clear" {
-			result = append(result, messageDTO{
-				Type:      entry.Type,
-				CreatedAt: formatTime(entry.CreatedAt),
-			})
-			continue
-		}
-		if entry.Content == "" {
-			continue
-		}
-		result = append(result, messageDTO{
-			Type:                 entry.Type,
-			ID:                   entry.ID,
-			Role:                 entry.Role,
-			Content:              entry.Content,
-			Name:                 entry.Name,
-			Args:                 entry.Args,
-			Status:               entry.Status,
-			Result:               entry.Result,
-			Illustration:         entry.Illustration,
-			CreatedAt:            formatTime(entry.CreatedAt),
-			RunID:                entry.RunID,
-			AgentKind:            entry.AgentKind,
-			AgentName:            entry.AgentName,
-			RootAgentName:        entry.RootAgentName,
-			RunPath:              append([]string(nil), entry.RunPath...),
-			SubAgent:             entry.SubAgent,
-			SubAgentSessionID:    entry.SubAgentSessionID,
-			SubAgentType:         entry.SubAgentType,
-			PromptTokens:         entry.PromptTokens,
-			CachedPromptTokens:   entry.CachedPromptTokens,
-			UncachedPromptTokens: entry.UncachedPromptTokens,
-			CacheHitRate:         entry.CacheHitRate,
-			CompletionTokens:     entry.CompletionTokens,
-			ReasoningTokens:      entry.ReasoningTokens,
-			TotalTokens:          entry.TotalTokens,
-			ModelCalls:           entry.ModelCalls,
-			GeneratedBytes:       entry.GeneratedBytes,
-			UsageCalls:           entry.UsageCalls,
-		})
-	}
-	return result
-}
-
-func sessionDTOFromSession(sess *session.Session, active bool) sessionDTO {
+func sessionDTOFromSession(sess *appsvc.AgentSession, active bool) sessionDTO {
 	return sessionDTO{
 		ID:           sess.ID,
 		Title:        sess.Title(),

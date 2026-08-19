@@ -12,6 +12,7 @@ import { queryClient } from '@/lib/query-client'
 import { installGlobalRuntimeLoggers, recordRuntimeLog, scheduleWhiteScreenCheck } from '@/lib/runtimeLog'
 import { fetchSettings } from '@/features/settings/api'
 import { applyFontSettings, fontSettingsFromEffective } from '@/features/settings/font-variables'
+import { AgentApprovalProvider } from '@/features/agent-approval/AgentApprovalProvider'
 
 installGlobalRuntimeLoggers()
 
@@ -25,24 +26,25 @@ if (!root) {
   throw new Error('root 节点不存在')
 }
 
-void bootstrapSettings().finally(() => {
-  createRoot(root).render(
-    <StrictMode>
-      <QueryClientProvider client={queryClient}>
-        <ThemeProvider attribute="data-theme" defaultTheme="dark" enableSystem themes={['light', 'dark']}>
-          <TooltipProvider>
-            <RuntimeErrorBoundary>
+createRoot(root).render(
+  <StrictMode>
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider attribute="data-theme" defaultTheme="dark" enableSystem themes={['light', 'dark']}>
+        <TooltipProvider>
+          <RuntimeErrorBoundary>
+            <AgentApprovalProvider>
               <App />
-              <Toaster richColors closeButton />
-            </RuntimeErrorBoundary>
-          </TooltipProvider>
-        </ThemeProvider>
-      </QueryClientProvider>
-    </StrictMode>,
-  )
+            </AgentApprovalProvider>
+            <Toaster richColors closeButton />
+          </RuntimeErrorBoundary>
+        </TooltipProvider>
+      </ThemeProvider>
+    </QueryClientProvider>
+  </StrictMode>,
+)
 
-  scheduleWhiteScreenCheck(root)
-})
+scheduleWhiteScreenCheck(root)
+void bootstrapSettings()
 
 async function bootstrapSettings() {
   try {

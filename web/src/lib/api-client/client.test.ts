@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { toast } from 'sonner'
 import { setConfiguredLocale } from '@/i18n'
-import { clearRemoteAccessCredentials, fetchAPI, requestJSON, setRemoteAccessCredentials } from './client'
+import { APIError, clearRemoteAccessCredentials, fetchAPI, parseSSEStream, requestJSON, responseAPIError, setRemoteAccessCredentials, withErrorLogID } from './client'
 
 vi.mock('sonner', () => ({
   toast: {
@@ -91,5 +91,88 @@ describe('api client backend availability toast', () => {
     expect(listener).toHaveBeenCalledTimes(1)
     clearRemoteAccessCredentials()
     window.removeEventListener('nova:remote-access-required', listener)
+  })
+
+  it('preserves status, domain code and details for structured conflicts', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      error: 'workspace revision changed',
+      code: 'revision_conflict',
+      request_id: '0198f2cb-e980-7a21-81ba-e4999869808c',
+      details: { path: 'chapters/ch01.md', expected: 'sha256:old', actual: 'sha256:new' },
+    }), { status: 409, headers: { 'Content-Type': 'application/json' } })))
+
+    const error = await requestJSON('/api/projects/project-one/changes/groups/group-1/review').catch((reason) => reason)
+
+    expect(error).toBeInstanceOf(APIError)
+    if (!(error instanceof APIError)) {
+      throw new TypeError('expected APIError')
+    }
+    expect(error).toMatchObject({
+      requestID: '0198f2cb-e980-7a21-81ba-e4999869808c',
+      status: 409,
+      code: 'revision_conflict',
+      details: { path: 'chapters/ch01.md', expected: 'sha256:old', actual: 'sha256:new' },
+    })
+    expect(error.message).toContain('workspace revision changed')
+    expect(error.message).toContain('0198f2cb-e980-7a21-81ba-e4999869808c')
+  })
+
+  it('preserves status for streaming response failures', async () => {
+    const error = await responseAPIError(new Response(JSON.stringify({
+      error: 'command rejected', code: 'agent_runtime.invalid_command',
+    }), { status: 400, headers: { 'Content-Type': 'application/json' } }))
+
+    expect(error).toBeInstanceOf(APIError)
+    expect(error).toMatchObject({ status: 400, code: 'agent_runtime.invalid_command', message: 'command rejected' })
+  })
+
+  it('uses the response header as the request ID fallback', async () => {
+    const error = await responseAPIError(new Response('gateway failed', {
+      status: 502,
+      headers: { 'X-Request-ID': '0198f2cb-e980-7a21-81ba-e4999869808d' },
+    }))
+
+    expect(error.requestID).toBe('0198f2cb-e980-7a21-81ba-e4999869808d')
+    expect(error.message).toContain('0198f2cb-e980-7a21-81ba-e4999869808d')
+  })
+
+  it('keeps a request ID when localized UI copy replaces the backend message', () => {
+    const requestID = '0198f2cb-e980-7a21-81ba-e4999869808e'
+
+    expect(withErrorLogID('保存失败', { request_id: requestID })).toBe(`保存失败 · 日志 ID: ${requestID}`)
+    expect(withErrorLogID('保存失败', new Error(`upstream failed · Log ID: ${requestID}`))).toBe(`保存失败 · 日志 ID: ${requestID}`)
+    expect(withErrorLogID(`保存失败 · 日志 ID: ${requestID}`, { request_id: requestID })).toBe(`保存失败 · 日志 ID: ${requestID}`)
+  })
+})
+
+describe('parseSSEStream', () => {
+  it('preserves split boundaries, multiline data, CRLF, and a final unterminated event', async () => {
+    const source = [
+      'id: 41\nevent: tool\ndata: first',
+      '\ndata: second\n\n',
+      'event: chunk\r\ndata: third\r\n\r',
+      '\nevent: done\ndata: {}',
+    ]
+    const encoder = new TextEncoder()
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of source) controller.enqueue(encoder.encode(chunk))
+        controller.close()
+      },
+    })
+
+    const reader = parseSSEStream(body).getReader()
+    const events = []
+    while (true) {
+      const result = await reader.read()
+      if (result.done) break
+      events.push(result.value)
+    }
+
+    expect(events).toEqual([
+      { id: '41', event: 'tool', data: 'first\nsecond' },
+      { event: 'chunk', data: 'third' },
+      { event: 'done', data: '{}' },
+    ])
   })
 })

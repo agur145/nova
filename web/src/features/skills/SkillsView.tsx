@@ -1,53 +1,128 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { ElementType, ReactNode } from 'react'
-import { Bot, CheckCircle2, Copy, FileCode2, Loader2, Lock, PanelLeft, PanelRight, Plus, RefreshCw, Save, Settings2, Sparkles, Trash2, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Bot, RefreshCw, Sparkles } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { InlineErrorNotice } from '@/components/common/inline-error-notice'
 import { ConfigManagerChat } from '@/components/Chat/ConfigManagerChat'
+import { ConfirmDialog } from '@/components/common/ConfirmDialog'
+import { EmptyState } from '@/components/common/EmptyState'
+import { LoadingState } from '@/components/common/LoadingState'
+import { AutosaveStatusIndicator } from '@/components/forms/autosave-status'
 import { AdaptiveSurface } from '@/components/layout/adaptive-surface'
-import { Textarea } from '@/components/ui/textarea'
-import { createSkill, deleteSkillDocument, getSkillDocument, getSkills, saveSkillDocument } from '@/lib/api'
-import type { SkillDocument, SkillScope, SkillScopeInfo, SkillSnapshot, SkillSummary } from '@/lib/api'
-import { AGENTS } from '@/features/agents/agent-registry'
-import type { AgentViewDefinition, VisibleAgentKey } from '@/features/agents/agent-registry'
-
-const skillNamePattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
-const scopes: SkillScope[] = ['user', 'workspace', 'builtin']
-const skillAgentOptions = AGENTS.filter((agent) => agent.capabilityMode === 'tools')
+import { FeaturePageShell } from '@/components/layout/feature-page-shell'
+import { MobilePaneTrigger } from '@/components/layout/mobile-pane-trigger'
+import { SidebarVisibilityToggle } from '@/components/layout/sidebar-visibility-toggle'
+import { Button } from '@/components/ui/button'
+import { useResourceAutosave } from '@/hooks/use-resource-autosave'
+import { deleteSkillDocument, getSkillDocument, getSkillFileDocument, getSkills, saveSkillDocument, saveSkillFileDocument, skillCatalogTargetKey } from '@/lib/api'
+import { isRevisionConflict, saveWithRevisionRecovery } from '@/lib/revision-conflict'
+import { rebaseTextWithRecovery } from '@/lib/autosave/rebase-with-recovery'
+import type { SkillCatalogTarget, SkillDocument, SkillFileDocument, SkillInstallResult, SkillScope, SkillSnapshot, SkillSummary } from '@/lib/api'
+import { SkillConfigPanel, type SkillConfigPanelHandle } from './SkillConfigPanel'
+import { SkillCreatePanel } from './SkillCreatePanel'
+import { SkillEditor } from './SkillEditor'
+import { SkillInstallPanel } from './SkillInstallPanel'
+import { SkillListPanel } from './SkillListPanel'
+import { keyOf, preferredBuiltinOverrideScope, scopeLabel, skillEntryFile, skillFilePath, skillHasSupportingFiles, type SkillContentViewMode, type SkillsMode } from './skill-utils'
+import type { ToolNavigationIntent } from '@/components/Chat/tool-navigation'
 
 interface SkillsViewProps {
-  workspace: string
+  target: SkillCatalogTarget
   onClose?: () => void
-  onRequestAgent?: (prompt: string) => void
+  toolNavigationIntent?: ToolNavigationIntent | null
 }
 
-type SkillsMode = 'editor' | 'create' | 'config'
+interface SkillContentAutosaveDraft {
+  id: string
+  updated_at?: string
+  scope: SkillScope
+  name: string
+  path: string
+  content: string
+}
 
-export function SkillsView({ workspace, onClose, onRequestAgent }: SkillsViewProps) {
-  void onRequestAgent
+interface SkillContentAutosaveSaved extends SkillContentAutosaveDraft {
+  document?: SkillDocument
+  fileDocument?: SkillFileDocument
+}
+
+let nextSkillsViewSourceID = 1
+
+/** Delete/restore snapshot the display values so later state changes cannot alter dialog copy. */
+type ConfirmRequest =
+  | { kind: 'delete'; name: string }
+  | { kind: 'restore'; name: string; scope: string }
+
+function skillContentDraft(
+  document: SkillDocument,
+  path: string,
+  content: string,
+  updatedAt = document.revision,
+): SkillContentAutosaveDraft {
+  return {
+    id: `${document.scope}:${document.name}:${path}`,
+    updated_at: updatedAt,
+    scope: document.scope,
+    name: document.name,
+    path,
+    content,
+  }
+}
+
+function skillContentSignature(value: Partial<SkillContentAutosaveDraft>) {
+  return `${value.scope || ''}\u0000${value.name || ''}\u0000${value.path || ''}\u0000${value.content || ''}`
+}
+
+function skillSummaryOf(value: SkillSummary): SkillSummary {
+  const { name, description, category, capabilities, context, agent, model, scope, path, editable, active, updated_at } = value
+  return { name, description, category, capabilities, context, agent, model, scope, path, editable, active, updated_at }
+}
+
+export function SkillsView({ target, onClose, toolNavigationIntent }: SkillsViewProps) {
   const { t } = useTranslation()
+  const targetKind = target.kind
+  const projectId = target.kind === 'project' ? target.projectId : ''
+  const catalogTarget = useMemo<SkillCatalogTarget>(
+    () => targetKind === 'project' ? { kind: 'project', projectId } : { kind: 'global' },
+    [projectId, targetKind],
+  )
+  const targetKey = skillCatalogTargetKey(catalogTarget)
+  const agentAvailable = targetKind === 'project'
   const [snapshot, setSnapshot] = useState<SkillSnapshot>({ scopes: [], skills: [] })
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [document, setDocument] = useState<SkillDocument | null>(null)
   const [draft, setDraft] = useState('')
-  const [loading, setLoading] = useState(false)
+  const [selectedFilePath, setSelectedFilePath] = useState(skillEntryFile)
+  const [fileDocument, setFileDocument] = useState<SkillFileDocument | null>(null)
+  const [fileDraft, setFileDraft] = useState('')
+  const [contentViewMode, setContentViewMode] = useState<SkillContentViewMode>('preview')
+  const [fileTreeOpen, setFileTreeOpen] = useState(false)
+  const [fileLoading, setFileLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [mode, setMode] = useState<SkillsMode>('editor')
-  const [newScope, setNewScope] = useState<SkillScope>('user')
-  const [newName, setNewName] = useState('')
-  const [newDescription, setNewDescription] = useState('')
-  const [newAgents, setNewAgents] = useState<VisibleAgentKey[]>(['ide'])
-  const [configName, setConfigName] = useState('')
-  const [configScope, setConfigScope] = useState<SkillScope>('user')
-  const [configDescription, setConfigDescription] = useState('')
-  const [configAgents, setConfigAgents] = useState<VisibleAgentKey[]>([])
   const [agentOpen, setAgentOpen] = useState(false)
+  const [sidebarVisible, setSidebarVisible] = useState(true)
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null)
+  const [documentReloadVersion, setDocumentReloadVersion] = useState(0)
+  const [eventSource] = useState(() => `skills-view-${nextSkillsViewSourceID++}`)
+  const configPanelRef = useRef<SkillConfigPanelHandle | null>(null)
+  const fileTreePreferences = useRef(new Map<string, boolean>())
+  const toolNavigationNonceRef = useRef(0)
+  const notifySkillsUpdated = useCallback(() => {
+    window.dispatchEvent(new CustomEvent('nova:skills-updated', { detail: { source: eventSource, targetKey } }))
+  }, [eventSource, targetKey])
 
   const selectedSkill = useMemo(() => snapshot.skills.find((skill) => keyOf(skill) === selectedKey) ?? null, [selectedKey, snapshot.skills])
-  const dirty = document ? draft !== document.content : false
+  const selectedDocumentPending = Boolean(selectedSkill && (
+    !document || document.scope !== selectedSkill.scope || document.name !== selectedSkill.name
+  ))
+  const selectedSkillScope = selectedSkill?.scope
+  const selectedSkillName = selectedSkill?.name
+  const editingEntryFile = selectedFilePath === skillEntryFile
+  const activeEditable = editingEntryFile ? Boolean(document?.editable) : Boolean(fileDocument?.file.editable)
   const writableScopes = useMemo(() => snapshot.scopes.filter((scope) => scope.writable), [snapshot.scopes])
   const builtinOverrideScope = useMemo(() => preferredBuiltinOverrideScope(snapshot.scopes), [snapshot.scopes])
+  const defaultWritableScope: SkillScope = builtinOverrideScope?.scope || 'user'
   const builtinOverride = useMemo(() => {
     if (!document) return null
     if (!builtinOverrideScope) return null
@@ -58,20 +133,133 @@ export function SkillsView({ workspace, onClose, onRequestAgent }: SkillsViewPro
     return snapshot.skills.find((skill) => skill.scope === 'builtin' && skill.name === document.name) ?? null
   }, [document, snapshot.skills])
 
+  const autosaveDraft = useMemo<SkillContentAutosaveDraft | null>(() => {
+    if (!document || mode !== 'editor') return null
+    if (editingEntryFile) return skillContentDraft(document, skillEntryFile, draft)
+    if (!fileDocument) return null
+    return skillContentDraft(document, selectedFilePath, fileDraft, fileDocument.revision)
+  }, [document, draft, editingEntryFile, fileDocument, fileDraft, mode, selectedFilePath])
+
+  const contentAutosave = useResourceAutosave<SkillContentAutosaveDraft, SkillContentAutosaveDraft, SkillContentAutosaveSaved>({
+    draft: autosaveDraft,
+    active: Boolean(autosaveDraft && activeEditable && !fileLoading),
+    scopeKey: `${targetKey}\u0000${autosaveDraft?.id || selectedKey || ''}`,
+    makePayload: (value) => value,
+    baselineFromSaved: (saved) => saved,
+    signature: skillContentSignature,
+    save: async (_id, payload, baseRevision) => {
+      if (payload.path === skillEntryFile) {
+        const saved = await saveSkillDocument(catalogTarget, payload.scope, payload.name, payload.content, undefined, baseRevision)
+        return { ...payload, updated_at: saved.revision, document: saved }
+      }
+      const saved = await saveSkillFileDocument(catalogTarget, payload.scope, payload.name, payload.path, payload.content, baseRevision)
+      return { ...payload, updated_at: saved.revision, fileDocument: saved }
+    },
+    resolveConflict: async ({ error: saveError, baseline, draft: submitted }) => {
+      if (!isRevisionConflict(saveError)) return null
+      if (submitted.path === skillEntryFile) {
+        const latest = await getSkillDocument(catalogTarget, submitted.scope, submitted.name)
+        const content = await rebaseTextWithRecovery({
+          resource: 'skill_document',
+          scope: `${targetKey}:${submitted.scope}`,
+          id: submitted.id,
+          baseline: { revision: baseline?.updated_at, value: baseline?.content ?? latest.content },
+          local: { revision: baseline?.updated_at, value: submitted.content },
+          external: { revision: latest.revision, value: latest.content },
+        })
+        return {
+          payload: {
+            ...submitted,
+            content,
+            updated_at: latest.revision,
+          },
+          baseRevision: latest.revision,
+        }
+      }
+      const latest = await getSkillFileDocument(catalogTarget, submitted.scope, submitted.name, submitted.path)
+      const content = await rebaseTextWithRecovery({
+        resource: 'skill_file',
+        scope: `${targetKey}:${submitted.scope}`,
+        id: submitted.id,
+        baseline: { revision: baseline?.updated_at, value: baseline?.content ?? latest.content },
+        local: { revision: baseline?.updated_at, value: submitted.content },
+        external: { revision: latest.revision, value: latest.content },
+      })
+      return {
+        payload: {
+          ...submitted,
+          content,
+          updated_at: latest.revision,
+        },
+        baseRevision: latest.revision,
+      }
+    },
+    onSaved: (saved, _mode, submitted) => {
+      if (saved.document) {
+        setDocument(saved.document)
+        setDraft((current) => current === submitted.content ? saved.document!.content : current)
+      } else if (saved.fileDocument) {
+        setFileDocument(saved.fileDocument)
+        setFileDraft((current) => current === submitted.content ? saved.fileDocument!.content : current)
+        setDocument((current) => {
+          if (!current || current.scope !== saved.scope || current.name !== saved.name) return current
+          const files = current.files?.map((file) => file.path === saved.path ? saved.fileDocument!.file : file)
+          return { ...current, ...saved.fileDocument!.skill, content: current.content, files }
+        })
+      }
+      const summary = saved.document ? skillSummaryOf(saved.document) : saved.fileDocument?.skill
+      if (summary) {
+        setSnapshot((current) => ({
+          ...current,
+          skills: current.skills.map((skill) => keyOf(skill) === keyOf(summary) ? { ...skill, ...summary } : skill),
+        }))
+      }
+      notifySkillsUpdated()
+    },
+  })
+
+  const baselineDraft = useMemo<SkillContentAutosaveDraft | null>(() => {
+    if (!document) return null
+    if (editingEntryFile) return skillContentDraft(document, skillEntryFile, document.content)
+    if (!fileDocument) return null
+    return skillContentDraft(document, selectedFilePath, fileDocument.content, fileDocument.revision)
+  }, [document, editingEntryFile, fileDocument, selectedFilePath])
+
+  useEffect(() => {
+    contentAutosave.resetBaseline(baselineDraft)
+  }, [baselineDraft, contentAutosave.resetBaseline])
+
+  const flushContentAutosave = useCallback(async (force = false) => {
+    try {
+      const pending = contentAutosave.flushPending()
+      if (pending) {
+        await pending
+      } else if (force || contentAutosave.status === 'error') {
+        await contentAutosave.saveNow('manual')
+      }
+      return true
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : String(saveError))
+      return false
+    }
+  }, [contentAutosave.flushPending, contentAutosave.saveNow, contentAutosave.status])
+
+  const flushActiveAutosave = useCallback(async (force = false) => {
+    if (mode === 'config') return configPanelRef.current?.flush() ?? true
+    return flushContentAutosave(force)
+  }, [flushContentAutosave, mode])
+
   const load = useCallback(async (): Promise<SkillSnapshot | null> => {
     setLoading(true)
     setError(null)
     try {
-      const data = await getSkills()
+      const data = await getSkills(catalogTarget)
       setSnapshot(data)
       setSelectedKey((current) => {
         if (current && data.skills.some((skill) => keyOf(skill) === current)) return current
         const firstActive = data.skills.find((skill) => skill.active)
         return firstActive ? keyOf(firstActive) : (data.skills[0] ? keyOf(data.skills[0]) : null)
       })
-      const nextWritable = data.scopes.find((scope) => scope.scope === 'user' && scope.writable) ||
-        data.scopes.find((scope) => scope.scope === 'workspace' && scope.writable)
-      if (nextWritable) setNewScope(nextWritable.scope)
       return data
     } catch (e) {
       setError((e as Error).message)
@@ -79,75 +267,85 @@ export function SkillsView({ workspace, onClose, onRequestAgent }: SkillsViewPro
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [catalogTarget])
 
-  useEffect(() => { void load() }, [load, workspace])
+  useEffect(() => { void load() }, [load])
 
   useEffect(() => {
     let cancelled = false
-    if (!selectedSkill) {
+    if (!selectedSkillScope || !selectedSkillName) {
       setDocument(null)
       setDraft('')
+      setSelectedFilePath(skillEntryFile)
+      setFileDocument(null)
+      setFileDraft('')
+      setFileTreeOpen(false)
       return () => { cancelled = true }
     }
     setError(null)
-    getSkillDocument(selectedSkill.scope, selectedSkill.name)
+    getSkillDocument(catalogTarget, selectedSkillScope, selectedSkillName)
       .then((doc) => {
         if (cancelled) return
         setDocument(doc)
         setDraft(doc.content)
+        setSelectedFilePath(skillEntryFile)
+        setFileDocument(null)
+        setFileDraft('')
+        setContentViewMode('preview')
+        setFileTreeOpen(fileTreePreferences.current.get(`${targetKey}\u0000${keyOf(doc)}`) ?? skillHasSupportingFiles(doc))
       })
       .catch((e) => {
         if (!cancelled) {
           setDocument(null)
           setDraft('')
+          setSelectedFilePath(skillEntryFile)
+          setFileDocument(null)
+          setFileDraft('')
+          setFileTreeOpen(false)
           setError((e as Error).message)
         }
       })
     return () => { cancelled = true }
-  }, [selectedSkill])
+  }, [catalogTarget, documentReloadVersion, selectedSkillName, selectedSkillScope, targetKey])
 
-  const onCreate = async () => {
-    const name = newName.trim()
-    if (!skillNamePattern.test(name)) {
-      setError(t('skills.create.invalidName'))
+  const resetFileState = () => {
+    setSelectedFilePath(skillEntryFile)
+    setFileDocument(null)
+    setFileDraft('')
+  }
+
+  const switchSkillFile = async (path: string) => {
+    if (!document || path === selectedFilePath) return
+    setError(null)
+    if (path === skillEntryFile) {
+      resetFileState()
       return
     }
-    setSaving(true)
-    setError(null)
+    setFileLoading(true)
     try {
-      const doc = await createSkill(newScope, name, newDescription.trim(), newAgents)
-      const docKey = keyOf(doc)
-      setNewName('')
-      setNewDescription('')
-      setNewAgents(['ide'])
-      setMode('editor')
-      window.dispatchEvent(new CustomEvent('nova:skills-updated'))
-      await load()
-      setSelectedKey(docKey)
+      const doc = await getSkillFileDocument(catalogTarget, document.scope, document.name, path)
+      setFileDocument(doc)
+      setFileDraft(doc.content)
+      setSelectedFilePath(path)
     } catch (e) {
       setError((e as Error).message)
     } finally {
-      setSaving(false)
+      setFileLoading(false)
     }
   }
 
-  const onSave = async () => {
-    if (!document || !document.editable) return
-    setSaving(true)
-    setError(null)
-    try {
-      const doc = await saveSkillDocument(document.scope, document.name, draft)
-      setDocument(doc)
-      setDraft(doc.content)
-      setSelectedKey(keyOf(doc))
-      window.dispatchEvent(new CustomEvent('nova:skills-updated'))
-      await load()
-    } catch (e) {
-      setError((e as Error).message)
-    } finally {
-      setSaving(false)
-    }
+  const selectSkillFile = async (path: string) => {
+    if (!document || path === selectedFilePath) return
+    if (!await flushContentAutosave()) return
+    await switchSkillFile(path)
+  }
+
+  const toggleFileTree = () => {
+    setFileTreeOpen((current) => {
+      const next = !current
+      if (document) fileTreePreferences.current.set(`${targetKey}\u0000${keyOf(document)}`, next)
+      return next
+    })
   }
 
   const onCreateBuiltinOverride = async () => {
@@ -165,12 +363,44 @@ export function SkillsView({ workspace, onClose, onRequestAgent }: SkillsViewPro
     setSaving(true)
     setError(null)
     try {
-      const doc = await saveSkillDocument(builtinOverrideScope.scope, document.name, draft)
+      let recoveryBaselineRevision = document.revision
+      let latestRevision: string | undefined
+      const doc = await saveWithRevisionRecovery({
+        baseline: document.content,
+        draft,
+        revision: document.revision,
+        save: (content, revision) => saveSkillDocument(
+          catalogTarget,
+          document.scope,
+          document.name,
+          content,
+          { scope: builtinOverrideScope.scope, name: document.name },
+          revision,
+        ),
+        loadLatest: async () => {
+          const latest = await getSkillDocument(catalogTarget, document.scope, document.name)
+          latestRevision = latest.revision
+          return { value: latest.content, revision: latest.revision }
+        },
+        rebase: async (baseline, local, external) => {
+          const content = await rebaseTextWithRecovery({
+            resource: 'skill_document',
+            scope: `${targetKey}:${document.scope}`,
+            id: `${document.scope}:${document.name}:override`,
+            baseline: { revision: recoveryBaselineRevision, value: baseline },
+            local: { revision: recoveryBaselineRevision, value: local },
+            external: { revision: latestRevision, value: external },
+          })
+          recoveryBaselineRevision = latestRevision || recoveryBaselineRevision
+          return content
+        },
+      })
       setDocument(doc)
       setDraft(doc.content)
+      resetFileState()
       setSelectedKey(keyOf(doc))
       setMode('editor')
-      window.dispatchEvent(new CustomEvent('nova:skills-updated'))
+      notifySkillsUpdated()
       await load()
     } catch (e) {
       setError((e as Error).message)
@@ -179,215 +409,242 @@ export function SkillsView({ workspace, onClose, onRequestAgent }: SkillsViewPro
     }
   }
 
-  const openConfig = () => {
+  const requestDelete = async () => {
     if (!document?.editable) return
-    setConfigName(document.name)
-    setConfigScope(document.scope)
-    setConfigDescription(document.description)
-    setConfigAgents(parseAgentKeys(document.agent))
-    setMode('config')
-    setError(null)
+    if (!await flushActiveAutosave()) return
+    setConfirmRequest({ kind: 'delete', name: document.name })
   }
 
-  const onSaveConfig = async () => {
-    if (!document?.editable) return
-    const name = configName.trim()
-    if (!skillNamePattern.test(name)) {
-      setError(t('skills.create.invalidName'))
-      return
-    }
-    if (!writableScopes.some((scope) => scope.scope === configScope)) {
-      setError(t('skills.config.scopeRequired'))
-      return
-    }
-    const description = configDescription.trim()
-    if (!description) {
-      setError(t('skills.config.descriptionRequired'))
-      return
-    }
-    setSaving(true)
-    setError(null)
-    try {
-      const nextContent = updateSkillConfigContent(draft, name, description, configAgents)
-      const doc = await saveSkillDocument(document.scope, document.name, nextContent, { scope: configScope, name })
-      setDocument(doc)
-      setDraft(doc.content)
-      setMode('editor')
-      window.dispatchEvent(new CustomEvent('nova:skills-updated'))
-      await load()
-      setSelectedKey(keyOf(doc))
-    } catch (e) {
-      setError((e as Error).message)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const onDelete = async () => {
-    if (!document?.editable) return
-    if (!window.confirm(t('skills.delete.confirm', { name: document.name }))) return
-    setSaving(true)
-    setError(null)
-    try {
-      await deleteSkillDocument(document.scope, document.name)
-      setDocument(null)
-      setDraft('')
-      setMode('editor')
-      setSelectedKey(null)
-      window.dispatchEvent(new CustomEvent('nova:skills-updated'))
-      await load()
-    } catch (e) {
-      setError((e as Error).message)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const onRestoreBuiltin = async () => {
+  const requestRestoreBuiltin = async () => {
     if (!document?.editable || !builtinPeer) return
-    if (!window.confirm(t('skills.restoreBuiltin.confirm', { name: document.name, scope: scopeLabel(document.scope, t) }))) return
-    const name = document.name
+    if (!await flushActiveAutosave()) return
+    setConfirmRequest({ kind: 'restore', name: document.name, scope: scopeLabel(document.scope, t) })
+  }
+
+  /** Deletes the selected document and returns the refreshed catalog snapshot. */
+  const deleteCurrentDocument = async (): Promise<SkillSnapshot | null> => {
+    if (!document?.editable) return null
     setSaving(true)
     setError(null)
     try {
-      await deleteSkillDocument(document.scope, document.name)
+      await deleteSkillDocument(catalogTarget, document.scope, document.name)
       setDocument(null)
       setDraft('')
+      resetFileState()
       setMode('editor')
-      window.dispatchEvent(new CustomEvent('nova:skills-updated'))
-      const data = await load()
-      const revealed = data?.skills.find((skill) => skill.name === name && skill.active) ||
-        data?.skills.find((skill) => skill.name === name && skill.scope === 'builtin')
-      setSelectedKey(revealed ? keyOf(revealed) : null)
+      notifySkillsUpdated()
+      return await load()
     } catch (e) {
       setError((e as Error).message)
+      throw e
     } finally {
       setSaving(false)
     }
   }
 
-  const askAgent = () => {
-    setAgentOpen((value) => !value)
+  const performRestoreBuiltin = async () => {
+    if (!builtinPeer) return
+    const name = document?.name
+    const data = await deleteCurrentDocument()
+    const revealed = data?.skills.find((skill) => skill.name === name && skill.active) ||
+      data?.skills.find((skill) => skill.name === name && skill.scope === 'builtin')
+    setSelectedKey(revealed ? keyOf(revealed) : null)
+  }
+
+  const confirmContent = useMemo(() => {
+    if (!confirmRequest) return null
+    if (confirmRequest.kind === 'delete') return { title: t('skills.delete.action'), description: t('skills.delete.confirm', { name: confirmRequest.name }), confirmLabel: t('skills.delete.action'), tone: 'danger' as const }
+    return { title: t('skills.restoreBuiltin.action'), description: t('skills.restoreBuiltin.confirm', { name: confirmRequest.name, scope: confirmRequest.scope }), confirmLabel: t('skills.restoreBuiltin.action'), tone: 'danger' as const }
+  }, [confirmRequest, t])
+
+  const onConfirmAction = async () => {
+    if (!confirmRequest) return
+    if (confirmRequest.kind === 'delete') {
+      await deleteCurrentDocument()
+      return
+    }
+    await performRestoreBuiltin()
+  }
+
+  const onCreated = async (doc: SkillDocument) => {
+    setMode('editor')
+    notifySkillsUpdated()
+    await load()
+    setSelectedKey(keyOf(doc))
+  }
+
+  const onInstalled = async (result: SkillInstallResult) => {
+    const first = result.installed[0]
+    setMode('editor')
+    notifySkillsUpdated()
+    await load()
+    if (first) setSelectedKey(keyOf(first))
+  }
+
+  const onConfigUpdated = (doc: SkillDocument) => {
+    const summary = skillSummaryOf(doc)
+    setDocument(doc)
+    setDraft(doc.content)
+    setSnapshot((current) => ({
+      ...current,
+      skills: current.skills.map((skill) => keyOf(skill) === keyOf(summary) ? { ...skill, ...summary } : skill),
+    }))
+    notifySkillsUpdated()
+  }
+
+  const onConfigIdentityChanged = async (doc: SkillDocument) => {
+    setDocument(doc)
+    setDraft(doc.content)
+    resetFileState()
+    setMode('editor')
+    notifySkillsUpdated()
+    await load()
+    setSelectedKey(keyOf(doc))
+  }
+
+  const refreshSkills = useCallback(async () => {
+    if (!await flushActiveAutosave()) return
+    if (await load()) setDocumentReloadVersion((current) => current + 1)
+  }, [flushActiveAutosave, load])
+
+  useEffect(() => {
+    const onSkillsUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ source?: string; targetKey?: string }>).detail
+      const source = detail?.source
+      if (source === eventSource) return
+      if (detail?.targetKey && detail.targetKey !== targetKey && detail.targetKey !== 'global') return
+      void refreshSkills()
+    }
+    window.addEventListener('nova:skills-updated', onSkillsUpdated)
+    return () => window.removeEventListener('nova:skills-updated', onSkillsUpdated)
+  }, [eventSource, refreshSkills, targetKey])
+
+  const openMode = async (nextMode: SkillsMode) => {
+    if (!await flushActiveAutosave()) return
+    setMode(nextMode)
+    setError(null)
+  }
+
+  const selectSkill = async (key: string) => {
+    if (!await flushActiveAutosave()) return
+    setSelectedKey(key)
+    setMode('editor')
+    setError(null)
+  }
+
+  useEffect(() => {
+    const intent = toolNavigationIntent
+    if (!intent || intent.nonce === toolNavigationNonceRef.current || intent.target.kind !== 'config_resource' || intent.target.resource !== 'skill') return
+    const id = intent.target.id || ''
+    if (!id) {
+      toolNavigationNonceRef.current = intent.nonce
+      return
+    }
+    const scope = isSkillScope(intent.target.scope) ? intent.target.scope : null
+    const skill = snapshot.skills.find((item) => (
+      (!scope || item.scope === scope)
+      && (item.name === id || item.path === id || keyOf(item) === id)
+    ))
+    if (!skill) return
+    toolNavigationNonceRef.current = intent.nonce
+    void selectSkill(keyOf(skill))
+  }, [snapshot.skills, toolNavigationIntent?.nonce])
+
+  const closeSkills = async () => {
+    if (!onClose || !await flushActiveAutosave()) return
+    onClose()
   }
 
   const agentContext = useMemo(() => {
-    const targetName = mode === 'create'
-      ? newName.trim() || 'new-skill'
-      : mode === 'config'
-        ? configName.trim() || document?.name || 'new-skill'
-        : document?.name || newName.trim() || 'new-skill'
-    const scope = mode === 'create'
-      ? newScope
-      : mode === 'config'
-        ? configScope
-        : document?.scope === 'builtin' && builtinOverrideScope
-          ? builtinOverrideScope.scope
-          : document?.scope || newScope
+    const targetName = document?.name || 'new-skill'
+    const scope = document?.scope === 'builtin' && builtinOverrideScope
+      ? builtinOverrideScope.scope
+      : document?.scope || defaultWritableScope
     return {
       mode,
       skill_name: targetName,
       skill_scope: scope,
-      skill_source_scope: mode === 'create' ? scope : document?.scope || scope,
+      skill_source_scope: document?.scope || scope,
       skill_path: skillFilePath(snapshot.scopes.find((item) => item.scope === scope), targetName) || '',
     }
-  }, [builtinOverrideScope, configName, configScope, document?.name, document?.scope, mode, newName, newScope, snapshot.scopes])
-  const skillListPanel = (
-    <div className="h-full min-h-0 overflow-y-auto bg-[var(--nova-surface-2)] p-3">
-      <div className="mb-4 grid grid-cols-2 gap-2">
-        <button
-          type="button"
-          onClick={askAgent}
-          className={`nova-nav-item inline-flex h-8 items-center justify-center gap-1.5 rounded border border-[var(--nova-border)] px-2 ${agentOpen ? 'is-active' : 'bg-[var(--nova-surface)]'}`}
-        >
-          <Bot className="h-3.5 w-3.5" />
-          <span className="min-w-0 truncate">{t('skills.agent.button')}</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setMode('create')
-            setError(null)
-          }}
-          className={`nova-nav-item inline-flex h-8 items-center justify-center gap-1.5 rounded border border-[var(--nova-border)] px-2 ${mode === 'create' ? 'is-active' : 'bg-[var(--nova-surface)]'}`}
-        >
-          <Plus className="h-3.5 w-3.5" />
-          <span className="min-w-0 truncate">{t('skills.create.title')}</span>
-        </button>
-      </div>
+  }, [builtinOverrideScope, defaultWritableScope, document?.name, document?.scope, mode, snapshot.scopes])
 
-      <div className="space-y-4">
-        {scopes.map((scope) => (
-          <SkillScopeList
-            key={scope}
-            scope={scope}
-            scopeInfo={snapshot.scopes.find((item) => item.scope === scope)}
-            skills={snapshot.skills.filter((skill) => skill.scope === scope)}
-            selectedKey={selectedKey}
-            onSelect={(key) => {
-              setSelectedKey(key)
-              setMode('editor')
-            }}
-          />
-        ))}
-      </div>
-    </div>
-  )
-  const agentPanel = agentOpen ? (
+  const agentPanel = agentAvailable && agentOpen ? (
     <div className="h-full min-h-0 bg-[var(--nova-surface)]">
       <ConfigManagerChat
-        workspace={workspace}
+        projectId={projectId}
         origin="skills"
         resourceId={agentContext.skill_name}
         context={agentContext}
         onMutated={() => {
-          window.dispatchEvent(new CustomEvent('nova:skills-updated'))
-          void load()
+          notifySkillsUpdated()
+          void refreshSkills()
         }}
       />
     </div>
   ) : null
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col bg-[var(--nova-bg)] text-[var(--nova-text)]">
-      <div className="nova-topbar flex min-h-10 shrink-0 flex-nowrap items-center gap-2 overflow-x-auto border-b px-3 py-1.5 text-xs sm:px-4">
-        <Sparkles className="h-3.5 w-3.5 text-[var(--nova-text-muted)]" />
-        <span className="shrink-0 font-medium">{t('skills.title')}</span>
-        <span className="hidden min-w-0 truncate text-[11px] text-[var(--nova-text-faint)] sm:inline">{t('skills.subtitle')}</span>
-        <button
-          type="button"
-          onClick={() => void load()}
-          disabled={loading}
-          className="nova-nav-item ml-auto inline-flex shrink-0 items-center gap-1.5 rounded border border-[var(--nova-border)] bg-[var(--nova-surface-2)] px-2.5 py-1 disabled:opacity-50"
-        >
-          <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
-          {t('common.refresh')}
-        </button>
-        <button
-          type="button"
-          onClick={() => void onSave()}
-          disabled={mode !== 'editor' || !dirty || saving || !document?.editable}
-          className="nova-nav-item inline-flex shrink-0 items-center gap-1.5 rounded border border-[var(--nova-border)] bg-[var(--nova-active)] px-2.5 py-1 disabled:cursor-not-allowed disabled:opacity-45"
-        >
-          {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-          {t('common.save')}
-        </button>
-        {onClose && (
-          <button type="button" onClick={onClose} className="nova-nav-item rounded p-1" aria-label={t('common.close')} title={t('common.close')}>
-            <X className="h-3.5 w-3.5" />
-          </button>
-        )}
-      </div>
-
-      {error && <InlineErrorNotice className="mx-3 mt-2" message={error} title={t('skills.error')} />}
-
+    <FeaturePageShell
+      icon={Sparkles}
+      title={t('skills.title')}
+      leadingContent={(
+        <SidebarVisibilityToggle
+          visible={sidebarVisible}
+          onToggle={() => setSidebarVisible((visible) => !visible)}
+        />
+      )}
+      subtitle={t('skills.subtitle')}
+      error={error}
+      errorTitle={t('skills.error')}
+      onClose={onClose ? () => void closeSkills() : undefined}
+      onSaveShortcut={() => flushActiveAutosave(true)}
+      className="bg-[var(--nova-bg)] text-[var(--nova-text)]"
+      actions={(
+        <>
+          {mode === 'editor' && document && activeEditable && (
+            <AutosaveStatusIndicator
+              status={contentAutosave.status}
+              error={contentAutosave.error}
+              onRetry={contentAutosave.retry}
+            />
+          )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void refreshSkills()}
+            disabled={loading}
+            className="nova-nav-item border-[var(--nova-border)] bg-[var(--nova-surface-2)]"
+          >
+            <RefreshCw data-icon="inline-start" className={loading ? 'animate-spin' : undefined} />
+            {t('common.refresh')}
+          </Button>
+        </>
+      )}
+    >
       <AdaptiveSurface
         left={{
           id: 'skills-list',
           title: t('skills.title'),
           side: 'left',
           icon: <Sparkles className="h-4 w-4" />,
-          content: skillListPanel,
+          content: (
+            <SkillListPanel
+              snapshot={snapshot}
+              selectedKey={selectedKey}
+              loading={loading}
+              agentAvailable={agentAvailable}
+              agentOpen={agentOpen}
+              mode={mode}
+              onToggleAgent={() => setAgentOpen((value) => !value)}
+              onCreate={() => void openMode('create')}
+              onInstall={() => void openMode('install')}
+              onSelect={(key) => void selectSkill(key)}
+            />
+          ),
           desktopClassName: 'min-h-0 border-r border-[var(--nova-border)]',
+          desktopVisible: sidebarVisible,
           mobileClassName: 'w-[min(90vw,380px)]',
         }}
         right={
@@ -404,638 +661,124 @@ export function SkillsView({ workspace, onClose, onRequestAgent }: SkillsViewPro
         }
         className="flex-1 text-xs"
         mainClassName="min-h-0 min-w-0"
-        desktopGridClassName={agentOpen ? 'grid-cols-[20rem_minmax(0,1fr)_minmax(320px,28rem)]' : 'grid-cols-[20rem_minmax(0,1fr)]'}
+        leftResize={{
+          layoutKey: 'nova-skills-list-layout',
+          label: t('layout.resize.sidebar'),
+          defaultSize: '320px',
+          minSize: '240px',
+          maxSize: '42%',
+        }}
+        rightResize={{
+          layoutKey: 'nova-skills-config-agent-layout',
+          label: t('layout.resize.right'),
+          defaultSize: '420px',
+          minSize: '300px',
+          maxSize: '65%',
+          mainMinSize: '240px',
+        }}
       >
-        {({ openLeft, openRight }) => (
+        {({ isMobile, openLeft, openRight }) => (
           <main className="flex h-full min-h-0 flex-col">
-            <div className="flex h-10 shrink-0 items-center gap-2 border-b border-[var(--nova-border)] bg-[var(--nova-surface)] px-3 md:hidden">
-              <button type="button" className="nova-icon-button flex h-8 w-8 items-center justify-center rounded-[var(--nova-radius)] border border-[var(--nova-border)] text-[var(--nova-text-muted)] hover:text-[var(--nova-text)]" aria-label={t('workbench.mobile.openSidePanel', { label: t('skills.title') })} onClick={openLeft}>
-                <PanelLeft className="h-4 w-4" />
-              </button>
-              <span className="min-w-0 flex-1 truncate text-[11px] text-[var(--nova-text-muted)]">{document?.name || t('skills.title')}</span>
-              {agentOpen && (
-                <button type="button" className="nova-icon-button flex h-8 w-8 items-center justify-center rounded-[var(--nova-radius)] border border-[var(--nova-border)] text-[var(--nova-text-muted)] hover:text-[var(--nova-text)]" aria-label={t('workbench.mobile.openSidePanel', { label: t('skills.agent.button') })} onClick={openRight}>
-                  <PanelRight className="h-4 w-4" />
-                </button>
-              )}
-            </div>
+            {isMobile && (
+              <div className="flex h-10 shrink-0 items-center gap-2 border-b border-[var(--nova-border)] bg-[var(--nova-surface)] px-3">
+                <MobilePaneTrigger
+                  side="left"
+                  label={t('workbench.mobile.openSidePanel', { label: t('skills.title') })}
+                  onClick={openLeft}
+                />
+                <span className="min-w-0 flex-1 truncate text-[11px] text-[var(--nova-text-muted)]">{document?.name || t('skills.title')}</span>
+                {agentAvailable && agentOpen && (
+                  <MobilePaneTrigger
+                    side="right"
+                    label={t('workbench.mobile.openSidePanel', { label: t('skills.agent.button') })}
+                    onClick={openRight}
+                  />
+                )}
+              </div>
+            )}
             {mode === 'create' ? (
-              <CreateSkillPanel
-                name={newName}
-                description={newDescription}
-                scope={newScope}
-                agents={newAgents}
+              <SkillCreatePanel
+                target={catalogTarget}
                 scopes={writableScopes}
-                scopeInfo={snapshot.scopes.find((item) => item.scope === newScope)}
-                saving={saving}
-                onNameChange={setNewName}
-                onDescriptionChange={setNewDescription}
-                onScopeChange={setNewScope}
-                onAgentsChange={setNewAgents}
-                onCreate={() => void onCreate()}
-                onAskAgent={askAgent}
+                defaultScope={defaultWritableScope}
+                onCreated={onCreated}
+                onAskAgent={agentAvailable ? () => setAgentOpen((value) => !value) : undefined}
+              />
+            ) : mode === 'install' ? (
+              <SkillInstallPanel
+                target={catalogTarget}
+                scopes={writableScopes}
+                defaultScope={defaultWritableScope}
+                onInstalled={onInstalled}
               />
             ) : mode === 'config' && document ? (
               <SkillConfigPanel
+                ref={configPanelRef}
+                target={catalogTarget}
                 document={document}
-                name={configName}
-                scope={configScope}
-                description={configDescription}
-                agents={configAgents}
+                content={draft}
                 scopes={writableScopes}
-                scopeInfo={snapshot.scopes.find((item) => item.scope === configScope)}
-                saving={saving}
-                onNameChange={setConfigName}
-                onScopeChange={setConfigScope}
-                onDescriptionChange={setConfigDescription}
-                onAgentsChange={setConfigAgents}
-                onSave={() => void onSaveConfig()}
+                onUpdated={onConfigUpdated}
+                onIdentityChanged={onConfigIdentityChanged}
                 onCancel={() => setMode('editor')}
-                onDelete={() => void onDelete()}
+                onDelete={() => void requestDelete()}
               />
             ) : document ? (
-              <>
-              <div className="flex min-h-12 shrink-0 items-center gap-3 border-b border-[var(--nova-border)] px-4">
-                <FileCode2 className="h-4 w-4 text-[var(--nova-text-muted)]" />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-sm text-[var(--nova-text)]">/{document.name}</span>
-                    <span className="rounded bg-[var(--nova-surface-2)] px-1.5 py-0.5 text-[10px] text-[var(--nova-text-muted)]">{scopeLabel(document.scope, t)}</span>
-                    {!document.active && <span className="rounded bg-[var(--nova-warning-bg)] px-1.5 py-0.5 text-[10px] text-[var(--nova-warning)]">{t('skills.shadowed')}</span>}
-                    {document.agent && <span className="rounded bg-[var(--nova-surface-2)] px-1.5 py-0.5 text-[10px] text-[var(--nova-text-muted)]">{document.agent}</span>}
-                    {!document.editable && <Lock className="h-3.5 w-3.5 text-[var(--nova-text-faint)]" />}
-                  </div>
-                  <div className="mt-0.5 truncate text-[11px] text-[var(--nova-text-faint)]" title={document.path}>{document.path}</div>
-                </div>
-                {dirty && <span className="text-[11px] text-[var(--nova-warning)]">{t('skills.unsaved')}</span>}
-                {document.editable && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={openConfig}
-                      className="nova-nav-item inline-flex h-7 shrink-0 items-center gap-1 rounded border border-[var(--nova-border)] bg-[var(--nova-surface-2)] px-2 text-[11px]"
-                    >
-                      <Settings2 className="h-3.5 w-3.5" />
-                      {t('skills.config.action')}
-                    </button>
-                    {builtinPeer && (
-                      <button
-                        type="button"
-                        onClick={() => void onRestoreBuiltin()}
-                        disabled={saving}
-                        className="nova-nav-item inline-flex h-7 shrink-0 items-center gap-1 rounded border border-[var(--nova-border)] bg-[var(--nova-surface-2)] px-2 text-[11px] disabled:cursor-not-allowed disabled:opacity-45"
-                      >
-                        <RefreshCw className="h-3.5 w-3.5" />
-                        {t('skills.restoreBuiltin.action')}
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => void onDelete()}
-                      disabled={saving}
-                      className="nova-nav-item inline-flex h-7 shrink-0 items-center gap-1 rounded border border-[var(--nova-border)] bg-[var(--nova-surface-2)] px-2 text-[11px] text-[var(--nova-danger)] disabled:cursor-not-allowed disabled:opacity-45"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                      {t('skills.delete.action')}
-                    </button>
-                  </>
-                )}
-                {document.scope === 'builtin' && (
-                  <button
-                    type="button"
-                    onClick={() => void onCreateBuiltinOverride()}
-                    disabled={saving || (!builtinOverrideScope && !builtinOverride)}
-                    title={!builtinOverrideScope && !builtinOverride ? t('skills.override.noWritable') : undefined}
-                    className="nova-nav-item inline-flex h-7 shrink-0 items-center gap-1 rounded border border-[var(--nova-border)] bg-[var(--nova-surface-2)] px-2 text-[11px] disabled:cursor-not-allowed disabled:opacity-45"
-                  >
-                    {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : builtinOverride ? <FileCode2 className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                    {builtinOverride
-                      ? t('skills.override.open', { scope: scopeLabel(builtinOverride.scope, t) })
-                      : t('skills.override.create', { scope: scopeLabel(builtinOverrideScope?.scope || 'user', t) })}
-                  </button>
-                )}
-              </div>
-              <Textarea
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                readOnly={!document.editable}
-                spellCheck={false}
-                className="min-h-0 flex-1 resize-none rounded-none border-0 bg-[var(--nova-bg)] px-5 py-4 font-mono text-xs leading-5 text-[var(--nova-text)] shadow-none focus-visible:ring-0"
+              <SkillEditor
+                document={document}
+                fileDocument={fileDocument}
+                draft={draft}
+                fileDraft={fileDraft}
+                selectedFilePath={selectedFilePath}
+                viewMode={contentViewMode}
+                fileTreeOpen={fileTreeOpen}
+                fileLoading={fileLoading}
+                saving={saving || contentAutosave.status === 'saving'}
+                builtinOverride={builtinOverride}
+                builtinOverrideScope={builtinOverrideScope}
+                builtinPeer={builtinPeer}
+                onDraftChange={setDraft}
+                onFileDraftChange={setFileDraft}
+                onSelectFile={(path) => void selectSkillFile(path)}
+                onToggleFileTree={toggleFileTree}
+                onViewModeChange={setContentViewMode}
+                onOpenConfig={() => {
+                  if (!document.editable) return
+                  void openMode('config')
+                }}
+                onDelete={() => void requestDelete()}
+                onRestoreBuiltin={() => void requestRestoreBuiltin()}
+                onCreateBuiltinOverride={() => void onCreateBuiltinOverride()}
               />
-              </>
+            ) : loading || selectedDocumentPending ? (
+              <LoadingState label={t('skills.loading')} className="h-full min-h-0" />
             ) : (
-              <div className="flex h-full items-center justify-center px-6 text-center text-xs text-[var(--nova-text-faint)]">
-                {loading ? t('skills.loading') : t('skills.empty')}
-              </div>
+              <EmptyState
+                icon={Sparkles}
+                title={t('skills.empty')}
+                variant="page"
+                className="h-full text-xs text-[var(--nova-text-faint)]"
+              />
             )}
           </main>
         )}
       </AdaptiveSurface>
-    </div>
-  )
-}
 
-function CreateSkillPanel({
-  name,
-  description,
-  scope,
-  agents,
-  scopes,
-  scopeInfo,
-  saving,
-  onNameChange,
-  onDescriptionChange,
-  onScopeChange,
-  onAgentsChange,
-  onCreate,
-  onAskAgent,
-}: {
-  name: string
-  description: string
-  scope: SkillScope
-  agents: VisibleAgentKey[]
-  scopes: SkillScopeInfo[]
-  scopeInfo?: SkillScopeInfo
-  saving: boolean
-  onNameChange: (value: string) => void
-  onDescriptionChange: (value: string) => void
-  onScopeChange: (value: SkillScope) => void
-  onAgentsChange: (value: VisibleAgentKey[]) => void
-  onCreate: () => void
-  onAskAgent: () => void
-}) {
-  const { t } = useTranslation()
-  const trimmedName = name.trim()
-  const invalidName = trimmedName !== '' && !skillNamePattern.test(trimmedName)
-  const targetName = trimmedName || t('skills.create.namePlaceholder')
-  const targetPath = skillFilePath(scopeInfo, targetName)
-
-  return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto flex w-full min-w-0 max-w-5xl flex-col gap-5 px-4 py-5 sm:px-6">
-        <section className="border-b border-[var(--nova-border)] pb-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-surface-2)]">
-              <Plus className="h-4 w-4 text-[var(--nova-text-muted)]" />
-            </div>
-            <div className="min-w-0">
-              <h1 className="truncate text-sm font-semibold">{t('skills.create.title')}</h1>
-              <div className="mt-1 text-[11px] text-[var(--nova-text-faint)]">{t('skills.create.subtitle')}</div>
-            </div>
-          </div>
-        </section>
-
-        {scopes.length === 0 ? (
-          <div className="rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-surface)] px-3 py-3 text-[11px] leading-5 text-[var(--nova-text-faint)]">
-            {t('skills.create.noWritableScope')}
-          </div>
-        ) : (
-          <>
-            <section className="space-y-3 border-b border-[var(--nova-border)] pb-5">
-              <SectionTitle icon={FileCode2} title={t('skills.create.section.identity')} />
-              <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-                <Field label={t('skills.create.scope')}>
-                  <div className="flex gap-1">
-                    {scopes.map((item) => (
-                      <button
-                        key={item.scope}
-                        type="button"
-                        onClick={() => onScopeChange(item.scope)}
-                        className={`nova-nav-item h-8 flex-1 rounded-[var(--nova-radius)] px-2 ${scope === item.scope ? 'is-active' : 'bg-[var(--nova-surface-2)] text-[var(--nova-text-muted)]'}`}
-                      >
-                        {scopeLabel(item.scope, t)}
-                      </button>
-                    ))}
-                  </div>
-                </Field>
-                <Field label={t('skills.create.name')}>
-                  <input
-                    value={name}
-                    onChange={(event) => onNameChange(event.target.value)}
-                    aria-invalid={invalidName}
-                    aria-label={t('skills.create.name')}
-                    placeholder={t('skills.create.namePlaceholder')}
-                    className="nova-field h-8 w-full rounded-[var(--nova-radius)] border px-2.5 font-mono outline-none aria-invalid:border-[var(--nova-danger)]"
-                  />
-                  <div className={`mt-1 text-[11px] ${invalidName ? 'text-[var(--nova-danger)]' : 'text-[var(--nova-text-faint)]'}`}>
-                    {invalidName ? t('skills.create.invalidName') : t('skills.create.nameHint')}
-                  </div>
-                </Field>
-              </div>
-              <Field label={t('skills.create.description')}>
-                <input
-                  value={description}
-                  onChange={(event) => onDescriptionChange(event.target.value)}
-                  aria-label={t('skills.create.description')}
-                  placeholder={t('skills.create.descriptionPlaceholder')}
-                  className="nova-field h-8 w-full rounded-[var(--nova-radius)] border px-2.5 outline-none"
-                />
-                <div className="mt-1 text-[11px] text-[var(--nova-text-faint)]">{t('skills.create.descriptionHint')}</div>
-              </Field>
-            </section>
-
-            <section className="space-y-3 border-b border-[var(--nova-border)] pb-5">
-              <SectionTitle icon={Bot} title={t('skills.create.section.agents')} />
-              <SkillAgentSelector agents={agents} onAgentsChange={onAgentsChange} />
-              <div className="rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-surface-2)] px-3 py-2 text-[11px] leading-5 text-[var(--nova-text-faint)]">
-                {agents.length === 0 ? t('skills.create.agentsAllHint') : t('skills.create.agentsHint')}
-              </div>
-            </section>
-
-            <section className="space-y-3 pb-5">
-              <SectionTitle icon={Sparkles} title={t('skills.create.section.preview')} />
-              <div className="grid gap-2 md:grid-cols-2">
-                <PreviewRow label={t('skills.create.preview.command')} value={`/${targetName}`} />
-                <PreviewRow label={t('skills.create.preview.scope')} value={scopeLabel(scope, t)} />
-                <PreviewRow label={t('skills.create.preview.path')} value={targetPath || t('skills.agent.pathFallback')} wide />
-                <PreviewRow
-                  label={t('skills.create.preview.agents')}
-                  value={agents.length > 0 ? agents.map((agent) => t(AGENTS.find((item) => item.key === agent)?.titleKey || agent)).join(', ') : t('skills.create.preview.allAgents')}
-                  wide
-                />
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={onCreate}
-                  disabled={saving || !trimmedName || invalidName}
-                  className="nova-nav-item inline-flex h-8 items-center justify-center gap-1.5 rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-active)] px-3 disabled:cursor-not-allowed disabled:opacity-45"
-                >
-                  {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-                  {t('skills.create.submit')}
-                </button>
-                <button
-                  type="button"
-                  onClick={onAskAgent}
-                  className="nova-nav-item inline-flex h-8 items-center justify-center gap-1.5 rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-surface-2)] px-3"
-                >
-                  <Bot className="h-3.5 w-3.5" />
-                  {t('skills.create.askAgent')}
-                </button>
-              </div>
-            </section>
-          </>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function SkillConfigPanel({
-  document,
-  name,
-  scope,
-  description,
-  agents,
-  scopes,
-  scopeInfo,
-  saving,
-  onNameChange,
-  onScopeChange,
-  onDescriptionChange,
-  onAgentsChange,
-  onSave,
-  onCancel,
-  onDelete,
-}: {
-  document: SkillDocument
-  name: string
-  scope: SkillScope
-  description: string
-  agents: VisibleAgentKey[]
-  scopes: SkillScopeInfo[]
-  scopeInfo?: SkillScopeInfo
-  saving: boolean
-  onNameChange: (value: string) => void
-  onScopeChange: (value: SkillScope) => void
-  onDescriptionChange: (value: string) => void
-  onAgentsChange: (value: VisibleAgentKey[]) => void
-  onSave: () => void
-  onCancel: () => void
-  onDelete: () => void
-}) {
-  const { t } = useTranslation()
-  const trimmedName = name.trim()
-  const invalidName = trimmedName !== '' && !skillNamePattern.test(trimmedName)
-  const trimmedDescription = description.trim()
-  const targetName = trimmedName || document.name
-  const targetPath = skillFilePath(scopeInfo, targetName)
-  const targetWritable = scopes.some((item) => item.scope === scope)
-
-  return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto flex w-full min-w-0 max-w-5xl flex-col gap-5 px-4 py-5 sm:px-6">
-        <section className="border-b border-[var(--nova-border)] pb-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-surface-2)]">
-              <Settings2 className="h-4 w-4 text-[var(--nova-text-muted)]" />
-            </div>
-            <div className="min-w-0">
-              <h1 className="truncate text-sm font-semibold">{t('skills.config.title')}</h1>
-              <div className="mt-1 text-[11px] text-[var(--nova-text-faint)]">{t('skills.config.subtitle')}</div>
-            </div>
-          </div>
-        </section>
-
-        <section className="space-y-3 border-b border-[var(--nova-border)] pb-5">
-          <SectionTitle icon={FileCode2} title={t('skills.create.section.identity')} />
-          <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-            <Field label={t('skills.create.scope')}>
-              <div className="flex gap-1">
-                {scopes.map((item) => (
-                  <button
-                    key={item.scope}
-                    type="button"
-                    onClick={() => onScopeChange(item.scope)}
-                    className={`nova-nav-item h-8 flex-1 rounded-[var(--nova-radius)] px-2 ${scope === item.scope ? 'is-active' : 'bg-[var(--nova-surface-2)] text-[var(--nova-text-muted)]'}`}
-                  >
-                    {scopeLabel(item.scope, t)}
-                  </button>
-                ))}
-              </div>
-            </Field>
-            <Field label={t('skills.create.name')}>
-              <input
-                value={name}
-                onChange={(event) => onNameChange(event.target.value)}
-                aria-invalid={invalidName}
-                aria-label={t('skills.create.name')}
-                placeholder={t('skills.create.namePlaceholder')}
-                className="nova-field h-8 w-full rounded-[var(--nova-radius)] border px-2.5 font-mono outline-none aria-invalid:border-[var(--nova-danger)]"
-              />
-              <div className={`mt-1 text-[11px] ${invalidName ? 'text-[var(--nova-danger)]' : 'text-[var(--nova-text-faint)]'}`}>
-                {invalidName ? t('skills.create.invalidName') : t('skills.create.nameHint')}
-              </div>
-            </Field>
-          </div>
-          <div className="grid gap-2 md:grid-cols-2">
-            <PreviewRow label={t('skills.create.preview.command')} value={`/${targetName}`} />
-            <PreviewRow label={t('skills.create.preview.scope')} value={scopeLabel(scope, t)} />
-            <PreviewRow label={t('skills.create.preview.path')} value={targetPath || t('skills.agent.pathFallback')} wide />
-          </div>
-          <Field label={t('skills.create.description')}>
-            <input
-              value={description}
-              onChange={(event) => onDescriptionChange(event.target.value)}
-              aria-label={t('skills.create.description')}
-              placeholder={t('skills.create.descriptionPlaceholder')}
-              className="nova-field h-8 w-full rounded-[var(--nova-radius)] border px-2.5 outline-none"
-            />
-            <div className={`mt-1 text-[11px] ${trimmedDescription ? 'text-[var(--nova-text-faint)]' : 'text-[var(--nova-danger)]'}`}>
-              {trimmedDescription ? t('skills.create.descriptionHint') : t('skills.config.descriptionRequired')}
-            </div>
-          </Field>
-        </section>
-
-        <section className="space-y-3 border-b border-[var(--nova-border)] pb-5">
-          <SectionTitle icon={Bot} title={t('skills.create.section.agents')} />
-          <SkillAgentSelector agents={agents} onAgentsChange={onAgentsChange} />
-          <div className="rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-surface-2)] px-3 py-2 text-[11px] leading-5 text-[var(--nova-text-faint)]">
-            {agents.length === 0 ? t('skills.create.agentsAllHint') : t('skills.create.agentsHint')}
-          </div>
-        </section>
-
-        <section className="flex flex-wrap gap-2 pb-5">
-          <button
-            type="button"
-            onClick={onSave}
-            disabled={saving || !trimmedName || invalidName || !trimmedDescription || !targetWritable}
-            className="nova-nav-item inline-flex h-8 items-center justify-center gap-1.5 rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-active)] px-3 disabled:cursor-not-allowed disabled:opacity-45"
-          >
-            {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-            {t('skills.config.save')}
-          </button>
-          <button
-            type="button"
-            onClick={onCancel}
-            className="nova-nav-item inline-flex h-8 items-center justify-center gap-1.5 rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-surface-2)] px-3"
-          >
-            {t('common.cancel')}
-          </button>
-          <button
-            type="button"
-            onClick={onDelete}
-            disabled={saving}
-            className="nova-nav-item ml-auto inline-flex h-8 items-center justify-center gap-1.5 rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-surface-2)] px-3 text-[var(--nova-danger)] disabled:cursor-not-allowed disabled:opacity-45"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-            {t('skills.delete.action')}
-          </button>
-        </section>
-      </div>
-    </div>
-  )
-}
-
-function SkillAgentSelector({
-  agents,
-  onAgentsChange,
-}: {
-  agents: VisibleAgentKey[]
-  onAgentsChange: (value: VisibleAgentKey[]) => void
-}) {
-  const { t } = useTranslation()
-  const agentGroups = groupSkillAgents(skillAgentOptions)
-  const toggleAgent = (agent: VisibleAgentKey, checked: boolean) => {
-    if (checked) {
-      onAgentsChange(agents.includes(agent) ? agents : [...agents, agent])
-      return
-    }
-    onAgentsChange(agents.filter((item) => item !== agent))
-  }
-
-  return (
-    <div className="space-y-3">
-      {agentGroups.map((group) => (
-        <div key={group.group}>
-          <div className="mb-1.5 text-[11px] font-medium text-[var(--nova-text-faint)]">{t(group.group)}</div>
-          <div className="grid gap-2 md:grid-cols-2">
-            {group.agents.map((agent) => {
-              const Icon = agent.icon
-              const checked = agents.includes(agent.key)
-              return (
-                <label
-                  key={agent.key}
-                  className={`nova-nav-item flex min-h-14 cursor-pointer items-center gap-3 rounded-[var(--nova-radius)] border px-3 py-2 ${checked ? 'is-active border-[var(--nova-border)]' : 'border-transparent bg-[var(--nova-surface)] text-[var(--nova-text-muted)] hover:border-[var(--nova-border)]'}`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={(event) => toggleAgent(agent.key, event.target.checked)}
-                    className="h-3.5 w-3.5"
-                  />
-                  <Icon className="h-4 w-4 shrink-0 text-[var(--nova-text-muted)]" />
-                  <span className="min-w-0">
-                    <span className="block truncate font-medium text-[var(--nova-text)]">{t(agent.titleKey)}</span>
-                    <span className="block truncate text-[11px] text-[var(--nova-text-faint)]">{t(agent.subtitleKey)}</span>
-                  </span>
-                </label>
-              )
-            })}
-          </div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function SkillScopeList({
-  scope,
-  scopeInfo,
-  skills,
-  selectedKey,
-  onSelect,
-}: {
-  scope: SkillScope
-  scopeInfo?: SkillScopeInfo
-  skills: SkillSummary[]
-  selectedKey: string | null
-  onSelect: (key: string) => void
-}) {
-  const { t } = useTranslation()
-  return (
-    <section>
-      <div className="mb-1.5 flex items-center justify-between gap-2">
-        <div className="font-medium text-[var(--nova-text-muted)]">{scopeLabel(scope, t)}</div>
-        <div className="text-[10px] text-[var(--nova-text-faint)]">{scopeInfo?.writable ? t('skills.scope.editable') : t('skills.scope.readonly')}</div>
-      </div>
-      {scopeInfo?.path && <div className="mb-2 truncate font-mono text-[10px] text-[var(--nova-text-faint)]" title={scopeInfo.path}>{scopeInfo.path}</div>}
-      {skills.length === 0 ? (
-        <div className="rounded border border-dashed border-[var(--nova-border)] px-2 py-3 text-center text-[11px] text-[var(--nova-text-faint)]">{t('skills.scope.empty')}</div>
-      ) : (
-        <div className="space-y-1">
-          {skills.map((skill) => {
-            const active = selectedKey === keyOf(skill)
-            return (
-              <button
-                key={keyOf(skill)}
-                type="button"
-                onClick={() => onSelect(keyOf(skill))}
-                className={`nova-nav-item w-full rounded border px-2.5 py-2 text-left ${
-                  active
-                    ? 'is-active border-[var(--nova-border)]'
-                    : 'border-transparent bg-[var(--nova-surface)] hover:border-[var(--nova-border)]'
-                }`}
-              >
-                <span className="flex items-center gap-2">
-                  <span className="min-w-0 flex-1 truncate font-mono text-xs text-[var(--nova-text)]">/{skill.name}</span>
-                  {skill.active ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-[var(--nova-success)]" /> : <span className="shrink-0 text-[10px] text-[var(--nova-warning)]">{t('skills.shadowed')}</span>}
-                  {!skill.editable && <Lock className="h-3.5 w-3.5 shrink-0 text-[var(--nova-text-faint)]" />}
-                </span>
-                <span className="mt-1 line-clamp-2 block text-[11px] leading-4 text-[var(--nova-text-faint)]">{skill.description}</span>
-              </button>
-            )
-          })}
-        </div>
+      {confirmContent && (
+        <ConfirmDialog
+          open={confirmRequest !== null}
+          onOpenChange={(open) => { if (!open) setConfirmRequest(null) }}
+          title={confirmContent.title}
+          description={confirmContent.description}
+          confirmLabel={confirmContent.confirmLabel}
+          tone={confirmContent.tone}
+          onConfirm={onConfirmAction}
+        />
       )}
-    </section>
+    </FeaturePageShell>
   )
 }
 
-function SectionTitle({ icon: Icon, title }: { icon: ElementType; title: string }) {
-  return (
-    <div className="flex items-center gap-2 text-xs font-medium text-[var(--nova-text)]">
-      <Icon className="h-3.5 w-3.5 text-[var(--nova-text-muted)]" />
-      {title}
-    </div>
-  )
-}
-
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="block">
-      <span className="mb-1.5 block text-[11px] font-medium text-[var(--nova-text-muted)]">{label}</span>
-      {children}
-    </div>
-  )
-}
-
-function PreviewRow({ label, value, wide = false }: { label: string; value: string; wide?: boolean }) {
-  return (
-    <div className={`rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-surface)] px-3 py-2 ${wide ? 'md:col-span-2' : ''}`}>
-      <div className="text-[10px] uppercase text-[var(--nova-text-faint)]">{label}</div>
-      <div className="mt-1 truncate font-mono text-xs text-[var(--nova-text)]" title={value}>{value}</div>
-    </div>
-  )
-}
-
-function keyOf(skill: Pick<SkillSummary, 'scope' | 'name'>) {
-  return `${skill.scope}:${skill.name}`
-}
-
-function skillFilePath(scope: SkillScopeInfo | undefined, name: string) {
-  if (!scope?.path) return ''
-  return `${scope.path.replace(/\/+$/, '')}/${name}/SKILL.md`
-}
-
-function parseAgentKeys(agentField?: string): VisibleAgentKey[] {
-  const allowed = new Set<string>(skillAgentOptions.map((agent) => agent.key))
-  const seen = new Set<VisibleAgentKey>()
-  const out: VisibleAgentKey[] = []
-  for (const part of (agentField || '').split(/[,;\s]+/)) {
-    if (!allowed.has(part)) continue
-    const agent = part as VisibleAgentKey
-    if (seen.has(agent)) continue
-    seen.add(agent)
-    out.push(agent)
-  }
-  return out
-}
-
-function updateSkillConfigContent(content: string, name: string, description: string, agents: VisibleAgentKey[]) {
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(\r?\n?[\s\S]*)$/)
-  if (!match) return content
-  const newline = content.includes('\r\n') ? '\r\n' : '\n'
-  const seen = { name: false, description: false, agent: false }
-  const nextLines: string[] = []
-  for (const line of match[1].split(/\r?\n/)) {
-    const key = line.match(/^\s*([A-Za-z_][A-Za-z0-9_-]*)\s*:/)?.[1]
-    if (key === 'name') {
-      seen.name = true
-      nextLines.push(`name: ${yamlString(name)}`)
-      continue
-    }
-    if (key === 'description') {
-      seen.description = true
-      nextLines.push(`description: ${yamlString(description)}`)
-      continue
-    }
-    if (key === 'agent') {
-      seen.agent = true
-      if (agents.length > 0) nextLines.push(`agent: ${yamlString(agents.join(','))}`)
-      continue
-    }
-    nextLines.push(line)
-  }
-  if (!seen.name) nextLines.unshift(`name: ${yamlString(name)}`)
-  if (!seen.description) nextLines.push(`description: ${yamlString(description)}`)
-  if (!seen.agent && agents.length > 0) nextLines.push(`agent: ${yamlString(agents.join(','))}`)
-  return `---${newline}${nextLines.join(newline)}${newline}---${match[2]}`
-}
-
-function yamlString(value: string) {
-  return JSON.stringify(value)
-}
-
-function scopeLabel(scope: SkillScope, t: (key: string) => string) {
-  if (scope === 'workspace') return t('skills.scope.workspace')
-  if (scope === 'user') return t('skills.scope.user')
-  return t('skills.scope.builtin')
-}
-
-function preferredBuiltinOverrideScope(scopes: SkillScopeInfo[]) {
-  return scopes.find((scope) => scope.scope === 'user' && scope.writable) ||
-    scopes.find((scope) => scope.scope === 'workspace' && scope.writable)
-}
-
-function groupSkillAgents(agentOptions: AgentViewDefinition[]) {
-  return agentOptions.reduce<Array<{ group: string; agents: AgentViewDefinition[] }>>((groups, agent) => {
-    const last = groups[groups.length - 1]
-    if (last?.group === agent.groupKey) {
-      last.agents.push(agent)
-    } else {
-      groups.push({ group: agent.groupKey, agents: [agent] })
-    }
-    return groups
-  }, [])
+function isSkillScope(value: string | undefined): value is SkillScope {
+  return value === 'builtin' || value === 'user' || value === 'workspace'
 }

@@ -15,6 +15,7 @@ import novelImport from './en-US/novelImport'
 import router from './en-US/router'
 import planning from './en-US/planning'
 import lore from './en-US/lore'
+import loreWorkspace from './en-US/loreWorkspace'
 import locale from './en-US/locale'
 import layout from './en-US/layout'
 import agents from './en-US/agents'
@@ -26,8 +27,7 @@ import storyPicker from './en-US/storyPicker'
 import branchTimeline from './en-US/branchTimeline'
 import storyStage from './en-US/storyStage'
 import snapshot from './en-US/snapshot'
-import memoryPanel from './en-US/memoryPanel'
-import storyMemory from './en-US/storyMemory'
+import directorPanel from './en-US/directorPanel'
 import settings from './en-US/settings'
 import time from './en-US/time'
 import versions from './en-US/versions'
@@ -37,6 +37,13 @@ import skills from './en-US/skills'
 import automations from './en-US/automations'
 import messages from './en-US/messages'
 import onboarding from './en-US/onboarding'
+import changes from './en-US/changes'
+import narrativeStyle from './en-US/narrativeStyle'
+import agentChat from './en-US/agentChat'
+import agentApproval from './en-US/agentApproval'
+import files from './en-US/files'
+import continualLearning from './en-US/continualLearning'
+import trajectory from './en-US/trajectory'
 
 const enUS = {
   ...common,
@@ -56,6 +63,7 @@ const enUS = {
   ...router,
   ...planning,
   ...lore,
+  ...loreWorkspace,
   ...locale,
   ...layout,
   ...agents,
@@ -67,8 +75,7 @@ const enUS = {
   ...branchTimeline,
   ...storyStage,
   ...snapshot,
-  ...memoryPanel,
-  ...storyMemory,
+  ...directorPanel,
   ...settings,
   ...time,
   ...versions,
@@ -78,6 +85,14 @@ const enUS = {
   ...automations,
   ...messages,
   ...onboarding,
+  ...changes,
+  ...narrativeStyle,
+  ...agentChat,
+  ...agentApproval,
+  ...files,
+  ...continualLearning,
+  ...trajectory,
+  'agents.tool.availability.runtimeCheck': 'Runtime check',
 } as const
 
 export default enUS

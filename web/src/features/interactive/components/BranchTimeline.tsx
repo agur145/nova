@@ -3,9 +3,10 @@ import { ArrowLeft, ChevronDown, ChevronUp, Crosshair, GitBranch, Move, Plus, Tr
 import { useTranslation } from 'react-i18next'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import type { BranchSummary, PlotNode, Snapshot, TurnEvent } from '../types'
+import { ConfirmDialog } from '@/components/common/ConfirmDialog'
+import type { BranchSummary, PlotNode, Snapshot } from '../types'
+import { CreateBranchDialog } from './branching/CreateBranchDialog'
+import { branchCreationSourceFromPlotNode, branchDisplayName, plotNodesFromSnapshot, type BranchCreationSource } from './branching/model'
 
 interface BranchTimelineProps {
   snapshot: Snapshot | null
@@ -115,18 +116,14 @@ export function BranchTimeline({
   const [internalExpanded, setInternalExpanded] = useState(false)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [selectedNodeSnapshot, setSelectedNodeSnapshot] = useState<PlotNode | null>(null)
-  const [branchSourceNode, setBranchSourceNode] = useState<PlotNode | null>(null)
-  const [createDialogOpen, setCreateDialogOpen] = useState(false)
-  const [branchTitle, setBranchTitle] = useState('')
-  const [creatingBranch, setCreatingBranch] = useState(false)
-  const [createError, setCreateError] = useState('')
+  const [branchCreationSource, setBranchCreationSource] = useState<BranchCreationSource | null>(null)
+  const [deleteBranchTarget, setDeleteBranchTarget] = useState<BranchSummary | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
-  const graphNodes = useMemo(() => buildGraphNodes(snapshot, t), [snapshot, t])
+  const graphNodes = useMemo(() => plotNodesFromSnapshot(snapshot, t), [snapshot, t])
   const graphBranches = useMemo(() => buildGraphBranches(snapshot, branches, graphNodes), [branches, graphNodes, snapshot])
   const selectedNode = graphNodes.find((node) => node.id === selectedNodeId) ||
     (selectedNodeSnapshot?.id === selectedNodeId ? selectedNodeSnapshot : null)
-  const createSourceNode = branchSourceNode || selectedNode
   const workspaceMode = variant === 'workspace'
   const expanded = workspaceMode ? true : controlledExpanded ?? internalExpanded
   const scrollSize = useElementSize(scrollRef, expanded)
@@ -134,6 +131,8 @@ export function BranchTimeline({
   const emptyBranchCount = graphBranches.filter((branch) => isEmptyBranch(branch, graphNodes)).length
   const metrics = useMemo(() => buildGraphMetrics(scrollSize.width), [scrollSize.width])
   const layout = useMemo(() => buildGraphLayout(graphNodes, graphBranches, metrics, scrollSize), [graphBranches, graphNodes, metrics, scrollSize])
+	const nodeOrderByID = useMemo(() => new Map(graphNodes.map((node, index) => [node.id, index + 1])), [graphNodes])
+	const linearRoute = graphBranches.length <= 1
 
   const currentPositionedNode = useMemo(() => {
     const branchHead = graphBranches.find((branch) => branch.id === currentBranchId)?.head
@@ -176,42 +175,17 @@ export function BranchTimeline({
 
   const openCreateDialog = () => {
     if (!selectedNode) return
-    setBranchSourceNode(selectedNode)
-    setBranchTitle(t('branchTimeline.newFromNode', { title: selectedNode.title }))
-    setCreateError('')
-    setCreateDialogOpen(true)
-  }
-
-  const handleCreateDialogOpenChange = (open: boolean) => {
-    if (creatingBranch) return
-    setCreateDialogOpen(open)
-    if (open) return
-    setBranchSourceNode(null)
-    setBranchTitle('')
-    setCreateError('')
-  }
-
-  const submitCreateBranch = async () => {
-    if (!createSourceNode || creatingBranch) return
-    setCreatingBranch(true)
-    setCreateError('')
-    try {
-      await onCreateBranch(createSourceNode.id, branchTitle.trim() || t('branchTimeline.newBranch'))
-      setCreateDialogOpen(false)
-      setBranchSourceNode(null)
-      setBranchTitle('')
-    } catch (error) {
-      setCreateError(error instanceof Error ? error.message : t('branchTimeline.createFailed'))
-    } finally {
-      setCreatingBranch(false)
-    }
+    setBranchCreationSource(branchCreationSourceFromPlotNode(selectedNode))
   }
 
   const deleteBranch = (branch: BranchSummary) => {
-    const label = formatBranchName(branch, t)
-    if (!window.confirm(t('branchTimeline.confirmDeleteEmpty', { name: label }))) return
-    onDeleteBranch(branch.id)
-    if (selectedNode?.branch_id === branch.id) setSelectedNodeId(null)
+    setDeleteBranchTarget(branch)
+  }
+
+  const confirmDeleteBranch = () => {
+    if (!deleteBranchTarget) return
+    onDeleteBranch(deleteBranchTarget.id)
+    if (selectedNode?.branch_id === deleteBranchTarget.id) setSelectedNodeId(null)
   }
 
   return (
@@ -241,12 +215,6 @@ export function BranchTimeline({
         <div className="flex min-w-0 flex-1 items-center justify-end gap-2 overflow-hidden">
           <span className="truncate text-[var(--nova-text-faint)]">{t('branchTimeline.nodeCount', { count: graphNodes.length || snapshot?.turns?.length || 0 })}</span>
           {emptyBranchCount > 0 && <Badge variant="outline" className="hidden border-[var(--nova-accent)]/35 bg-[var(--nova-accent)]/10 text-[var(--nova-accent)] sm:inline-flex">{t('branchTimeline.emptyBranchCount', { count: emptyBranchCount })}</Badge>}
-          {selectedNode && (
-            <Button variant="outline" size="xs" className="nova-nav-item hidden gap-1.5 border-[var(--nova-border)] bg-[var(--nova-surface-2)] text-[var(--nova-text-muted)] hover:bg-[var(--nova-hover)] hover:text-[var(--nova-text)] sm:inline-flex" onClick={openCreateDialog}>
-              <Plus className="h-3.5 w-3.5" />
-              {t('branchTimeline.createFromSelected')}
-            </Button>
-          )}
         </div>
       </div>
 
@@ -261,7 +229,6 @@ export function BranchTimeline({
                   className={`nova-nav-item flex h-7 max-md:min-h-9 shrink-0 items-center gap-2 rounded-[var(--nova-radius)] border px-2 text-xs transition ${row.branchId === currentBranchId ? 'is-active text-[var(--nova-text)]' : 'border-[var(--nova-border)] bg-[var(--nova-surface)] text-[var(--nova-text-muted)] hover:text-[var(--nova-text)]'}`}
                   style={row.branchId === currentBranchId ? { borderColor: row.color, background: row.colorSoft } : undefined}
                   onClick={() => onSwitchBranch(row.branchId)}
-                  title={formatBranchName(row.branch, t)}
                 >
                   <span className="h-2.5 w-2.5 rounded-full shadow-[0_0_10px_currentColor]" style={{ background: row.color, color: row.color }} />
                   <span className="max-w-32 truncate">{formatBranchName(row.branch, t)}</span>
@@ -275,10 +242,6 @@ export function BranchTimeline({
                 <Move className="h-3.5 w-3.5" />
                 {t('branchTimeline.dragHint')}
               </span>
-              <Button size="xs" variant="outline" className="nova-nav-item gap-1.5 border-[var(--nova-border)] bg-[var(--nova-surface-2)] text-[var(--nova-text-muted)] hover:bg-[var(--nova-hover)] hover:text-[var(--nova-text)]" disabled={!selectedNode} onClick={openCreateDialog}>
-                <Plus className="h-3.5 w-3.5 text-[var(--nova-text-faint)]" />
-                {t('branchTimeline.createBranch')}
-              </Button>
             </div>
           </div>
 
@@ -289,7 +252,7 @@ export function BranchTimeline({
               className="relative min-w-max"
               style={{ width: layout.width, height: layout.height }}
             >
-              <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_1px_1px,rgba(148,163,184,0.12)_1px,transparent_0)] [background-size:18px_18px]" />
+              <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_1px_1px,rgba(163,163,163,0.12)_1px,transparent_0)] [background-size:18px_18px]" />
               <svg className="pointer-events-none absolute inset-0 overflow-visible" width={layout.width} height={layout.height} aria-hidden="true">
                 {layout.connections.map((connection) => (
                   <path
@@ -316,22 +279,27 @@ export function BranchTimeline({
                     left: x,
                     top: y,
                     width: layout.metrics.nodeCardWidth,
-                    background: node.id === selectedNodeId ? `linear-gradient(180deg, rgba(48,50,56,0.96), ${colorSoft})` : colorSoft,
+                    background: node.id === selectedNodeId ? `linear-gradient(180deg, rgba(50,50,50,0.96), ${colorSoft})` : colorSoft,
                     borderColor: node.id === selectedNodeId || node.current ? color : undefined,
                     boxShadow: node.id === selectedNodeId
                       ? `0 10px 24px rgba(0,0,0,0.28), 0 0 0 1px ${color}33`
                       : undefined,
                   }}
                   onClick={() => selectNode(node)}
-                  title={`${node.title}\n${node.summary}`}
-                >
+							aria-label={t('branchTimeline.nodeAria', {
+								index: nodeOrderByID.get(node.id) || 1,
+								title: node.title,
+								state: node.current ? t('branchTimeline.currentNode') : node.terminal ? t('branchTimeline.terminalNode') : '',
+							})}
+	                >
                   <span className="h-2.5 w-2.5 shrink-0 rounded-full shadow-[0_0_14px_currentColor]" style={{ background: color, color }} />
                   <span className="min-w-0 flex-1 overflow-hidden">
                     <span className="block truncate text-[12px] leading-4 font-medium">{node.title}</span>
                     <span className="mt-0.5 block truncate text-[11px] leading-4 text-[var(--nova-text-faint)]">{node.summary || t('branchTimeline.nodeFallback')}</span>
                   </span>
-                  {node.head && <Badge variant="outline" className="h-5 max-w-12 shrink-0 border-[var(--nova-border)] bg-[var(--nova-surface)] px-1.5 text-[10px] text-[var(--nova-text-muted)]">HEAD</Badge>}
-                </button>
+	                  {node.terminal && <Badge variant="outline" className="h-5 max-w-14 shrink-0 border-[var(--nova-danger-border)] bg-[var(--nova-danger-bg)] px-1.5 text-[10px] text-[var(--nova-danger)]">{t('branchTimeline.terminalBadge')}</Badge>}
+	                  {node.head && <Badge variant="outline" className="h-5 max-w-12 shrink-0 border-[var(--nova-border)] bg-[var(--nova-surface)] px-1.5 text-[10px] text-[var(--nova-text-muted)]">HEAD</Badge>}
+	                </button>
               ))}
 
               {layout.emptyBranches.map((empty) => (
@@ -341,14 +309,13 @@ export function BranchTimeline({
                   style={{ left: empty.x, top: empty.y + 5, width: layout.metrics.nodeCardWidth, borderColor: empty.color, background: empty.colorSoft }}
                 >
                   <span className="h-2.5 w-2.5 rounded-full" style={{ background: empty.color }} />
-                  <span className="min-w-0 flex-1 truncate" title={formatBranchName(empty.branch, t)}>{t('branchTimeline.emptyBranch')}</span>
+                  <span className="min-w-0 flex-1 truncate">{t('branchTimeline.emptyBranch')}</span>
                   <button
                     type="button"
                     data-no-drag
                     className="rounded p-1 text-[var(--nova-danger)] opacity-75 hover:bg-[var(--nova-danger-bg)] hover:opacity-100"
                     onClick={() => deleteBranch(empty.branch)}
                     aria-label={t('branchTimeline.deleteEmptyBranchWithName', { name: formatBranchName(empty.branch, t) })}
-                    title={t('branchTimeline.deleteEmptyBranch')}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
@@ -368,10 +335,10 @@ export function BranchTimeline({
             ) : (
               <span>{t('branchTimeline.selectHint')}</span>
             )}
-            <Button size="xs" variant="outline" className="nova-nav-item shrink-0 gap-1.5 border-[var(--nova-border)] bg-[var(--nova-surface-2)] text-[var(--nova-text-muted)] hover:bg-[var(--nova-hover)] hover:text-[var(--nova-text)] sm:hidden" onClick={recenter} disabled={!currentPositionedNode} aria-label={t('branchTimeline.recenter')} title={t('branchTimeline.recenter')}>
+            <Button size="xs" variant="outline" className="nova-nav-item shrink-0 gap-1.5 border-[var(--nova-border)] bg-[var(--nova-surface-2)] text-[var(--nova-text-muted)] hover:bg-[var(--nova-hover)] hover:text-[var(--nova-text)] sm:hidden" onClick={recenter} disabled={!currentPositionedNode} aria-label={t('branchTimeline.recenter')}>
               <Crosshair className="h-3.5 w-3.5" />
             </Button>
-            <MiniMap layout={layout} scrollRef={scrollRef} ariaLabel={t('branchTimeline.minimap')} />
+			{linearRoute ? <div className="hidden flex-1 text-center text-[11px] text-[var(--nova-text-faint)] sm:block">{t('branchTimeline.linearRoute')}</div> : <MiniMap layout={layout} scrollRef={scrollRef} ariaLabel={t('branchTimeline.minimap')} />}
             {selectedNode && (
               <Button size="xs" className="shrink-0 gap-1.5 border border-[var(--nova-border)] bg-[var(--nova-active)] text-[var(--nova-text)] hover:bg-[var(--nova-hover)]" onClick={openCreateDialog}>
                 <Plus className="h-3.5 w-3.5" />
@@ -382,28 +349,22 @@ export function BranchTimeline({
         </div>
       )}
 
-      <Dialog open={createDialogOpen} onOpenChange={handleCreateDialogOpenChange}>
-        <DialogContent className="nova-panel border text-[var(--nova-text)]">
-          <DialogHeader>
-            <DialogTitle>{t('branchTimeline.dialogTitle')}</DialogTitle>
-            <DialogDescription className="text-[var(--nova-text-muted)]">
-              {createSourceNode ? t('branchTimeline.dialogDescription', { title: createSourceNode.title }) : ''}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
-            <Input className="nova-field text-sm" value={branchTitle} onChange={(event) => setBranchTitle(event.target.value)} placeholder={t('branchTimeline.namePlaceholder')} />
-            {createSourceNode?.summary && <div className="rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-surface)] p-2 text-xs leading-5 text-[var(--nova-text-muted)]">{createSourceNode.summary}</div>}
-            {createError && <div className="rounded-[var(--nova-radius)] border border-[var(--nova-danger-border)] bg-[var(--nova-danger-bg)] p-2 text-xs text-[var(--nova-danger)]">{createError}</div>}
-          </div>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => handleCreateDialogOpenChange(false)} disabled={creatingBranch}>{t('common.cancel')}</Button>
-            <Button className="gap-1.5 border border-[var(--nova-border)] bg-[var(--nova-active)] text-[var(--nova-text)] hover:bg-[var(--nova-hover)]" onClick={submitCreateBranch} disabled={!createSourceNode || creatingBranch}>
-              <Plus className="h-4 w-4" />
-              {creatingBranch ? t('common.creating') : t('branchTimeline.createAndSwitch')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <CreateBranchDialog
+        source={branchCreationSource}
+        onClose={() => setBranchCreationSource(null)}
+        onCreate={(source, title) => onCreateBranch(source.turnId, title)}
+      />
+      <ConfirmDialog
+        open={Boolean(deleteBranchTarget)}
+        onOpenChange={(open) => {
+          if (!open) setDeleteBranchTarget(null)
+        }}
+        title={t('branchTimeline.deleteEmptyBranch')}
+        description={t('branchTimeline.confirmDeleteEmpty', { name: deleteBranchTarget ? formatBranchName(deleteBranchTarget, t) : '' })}
+        confirmLabel={t('common.delete')}
+        tone="danger"
+        onConfirm={confirmDeleteBranch}
+      />
     </div>
   )
 }
@@ -470,7 +431,7 @@ function MiniMap({ layout, scrollRef, ariaLabel }: { layout: GraphLayout; scroll
       }}
       aria-label={ariaLabel}
     >
-      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.045),rgba(255,255,255,0)_42%),radial-gradient(circle_at_50%_0%,rgba(180,184,192,0.12),transparent_62%)]" />
+      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.045),rgba(255,255,255,0)_42%),radial-gradient(circle_at_50%_0%,rgba(186,186,186,0.12),transparent_62%)]" />
       <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-white/10" />
       <div className="pointer-events-none absolute inset-y-0 left-0 w-8 bg-gradient-to-r from-[var(--nova-surface-2)] to-transparent" />
       <div className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-[var(--nova-surface-2)] to-transparent" />
@@ -510,7 +471,7 @@ function MiniMap({ layout, scrollRef, ariaLabel }: { layout: GraphLayout; scroll
         ))}
       </svg>
       <div
-        className="absolute rounded-[5px] border border-white/45 bg-white/10 shadow-[0_0_0_1px_rgba(0,0,0,0.35),0_0_18px_rgba(212,215,221,0.16),inset_0_1px_0_rgba(255,255,255,0.22)] transition-all duration-150 group-active:duration-0"
+        className="absolute rounded-[5px] border border-white/45 bg-white/10 shadow-[0_0_0_1px_rgba(0,0,0,0.35),0_0_18px_rgba(216,216,216,0.16),inset_0_1px_0_rgba(255,255,255,0.22)] transition-all duration-150 group-active:duration-0"
         style={{
           left: `${viewport.left}%`,
           top: `${viewport.top}%`,
@@ -697,11 +658,6 @@ function isEmptyBranch(branch: BranchSummary, nodes: PlotNode[]) {
   return branch.id !== 'main' && branch.head === branch.from_event && !nodes.some((node) => node.branch_id === branch.id)
 }
 
-function buildGraphNodes(snapshot: Snapshot | null, t: (key: string, options?: Record<string, unknown>) => string): PlotNode[] {
-  if (snapshot?.graph?.nodes?.length) return snapshot.graph.nodes
-  return (snapshot?.turns || []).map((turn, index, turns) => turnToPlotNode(turn, index, turns.length, t))
-}
-
 function buildGraphBranches(snapshot: Snapshot | null, branches: BranchSummary[], nodes: PlotNode[]): BranchSummary[] {
   if (snapshot?.graph?.branches?.length) return snapshot.graph.branches
   if (branches.length) return branches
@@ -722,34 +678,11 @@ function buildGraphBranches(snapshot: Snapshot | null, branches: BranchSummary[]
   return Array.from(summaries.values())
 }
 
-function turnToPlotNode(turn: TurnEvent, index: number, total: number, t: (key: string, options?: Record<string, unknown>) => string): PlotNode {
-  const title = firstLine(turn.user || turn.narrative) || `${t('branchTimeline.nodeFallback')} ${index + 1}`
-  return {
-    id: turn.id,
-    parent_id: turn.parent_id || undefined,
-    branch_id: turn.branch_id || 'main',
-    title: truncateText(title, 18),
-    summary: truncateText(firstLine(turn.narrative) || t('branchTimeline.nodeFallback'), 28),
-    ts: turn.ts,
-    current: index === total - 1,
-    head: index === total - 1,
-  }
-}
-
-function firstLine(value: string) {
-  return value.trim().split(/\r?\n/).find(Boolean) || ''
-}
-
-function truncateText(value: string, maxLength: number) {
-  const text = value.trim()
-  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text
-}
-
 function formatBranchName(branch: BranchSummary | undefined, t: (key: string) => string) {
-  if (!branch) return t('branchTimeline.unknownBranch')
-  if (branch.id === 'main') return t('branchTimeline.mainBranch')
-  if (branch.title?.trim()) return branch.title.trim()
-  return branch.id
+  return branchDisplayName(branch, {
+    main: t('branchTimeline.mainBranch'),
+    unknown: t('branchTimeline.unknownBranch'),
+  })
 }
 
 function scrollElementTo(element: HTMLElement, left: number, top: number, behavior: ScrollBehavior) {

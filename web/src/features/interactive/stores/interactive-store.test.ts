@@ -25,12 +25,15 @@ describe('interactive-store', () => {
           title: '开端',
           origin: '',
           story_teller_id: 'classic',
+          story_director_id: 'default',
+          choice_count: 5,
           reply_target_chars: 2000,
           opening: { mode: 'ai' },
           created_at: '',
           updated_at: '',
           branches: 1,
           events: 0,
+          turn_count: 0,
         },
       ],
       'st_1',
@@ -51,12 +54,15 @@ describe('interactive-store', () => {
           title: '开端',
           origin: '',
           story_teller_id: 'classic',
+          story_director_id: 'default',
+          choice_count: 5,
           reply_target_chars: 2000,
           opening: { mode: 'ai' },
           created_at: '',
           updated_at: '',
           branches: 2,
           events: 0,
+          turn_count: 0,
         },
       ],
       'st_1',
@@ -78,12 +84,15 @@ describe('interactive-store', () => {
           title: '开端',
           origin: '',
           story_teller_id: 'classic',
+          story_director_id: 'default',
+          choice_count: 5,
           reply_target_chars: 2000,
           opening: { mode: 'ai' },
           created_at: '',
           updated_at: '',
           branches: 2,
           events: 0,
+          turn_count: 0,
         },
       ],
       'st_1',
@@ -94,32 +103,10 @@ describe('interactive-store', () => {
 
   it('remembers the selected story across refreshes', () => {
     const stories: StorySummary[] = [
-      {
-        id: 'st_1',
-        title: '故事线 1',
-        origin: '',
-        story_teller_id: 'classic',
-        reply_target_chars: 2000,
-        opening: { mode: 'ai' },
-        created_at: '',
-        updated_at: '',
-        branches: 1,
-        events: 0,
-      },
-      {
-        id: 'st_2',
-        title: '故事线 2',
-        origin: '',
-        story_teller_id: 'classic',
-        reply_target_chars: 2000,
-        opening: { mode: 'ai' },
-        created_at: '',
-        updated_at: '',
-        branches: 1,
-        events: 0,
-      },
+      storySummary('st_1', '故事线 1'),
+      storySummary('st_2', '故事线 2'),
     ]
-    useInteractiveStore.getState().setStories(stories, 'st_1')
+    useInteractiveStore.getState().setStories(stories)
     useInteractiveStore.getState().setCurrentStoryId('st_2')
 
     useInteractiveStore.setState({
@@ -129,7 +116,26 @@ describe('interactive-store', () => {
       currentStoryId: '',
       currentBranchId: 'main',
     })
-    useInteractiveStore.getState().setStories(stories, 'st_1')
+    useInteractiveStore.getState().setStories(stories)
+
+    expect(useInteractiveStore.getState().currentStoryId).toBe('st_2')
+  })
+
+  it('prefers the workspace current story over another browser local selection', () => {
+    const stories: StorySummary[] = [
+      storySummary('st_1', '本浏览器旧选择'),
+      storySummary('st_2', '工作区当前选择'),
+    ]
+    useInteractiveStore.getState().setCurrentStoryId('st_1')
+
+    useInteractiveStore.setState({
+      stories: [],
+      branches: [],
+      snapshot: null,
+      currentStoryId: '',
+      currentBranchId: 'main',
+    })
+    useInteractiveStore.getState().setStories(stories, 'st_2')
 
     expect(useInteractiveStore.getState().currentStoryId).toBe('st_2')
   })
@@ -142,12 +148,15 @@ describe('interactive-store', () => {
           title: '开端',
           origin: '',
           story_teller_id: 'classic',
+          story_director_id: 'default',
+          choice_count: 5,
           reply_target_chars: 2000,
           opening: { mode: 'ai' },
           created_at: '',
           updated_at: '',
           branches: 2,
           events: 0,
+          turn_count: 0,
         },
       ],
       'st_1',
@@ -171,12 +180,15 @@ describe('interactive-store', () => {
           title: '开端',
           origin: '',
           story_teller_id: 'classic',
+          story_director_id: 'default',
+          choice_count: 5,
           reply_target_chars: 2000,
           opening: { mode: 'ai' },
           created_at: '',
           updated_at: '',
           branches: 2,
           events: 0,
+          turn_count: 0,
         },
       ],
       'st_1',
@@ -186,10 +198,10 @@ describe('interactive-store', () => {
   })
 
   it('remembers the selected top-level interactive page', () => {
-    useInteractiveStore.getState().setSubmode('memory')
+    useInteractiveStore.getState().setSubmode('timeline')
 
-    expect(useInteractiveStore.getState().submode).toBe('memory')
-    expect(window.localStorage.getItem('nova.interactive.submode.v1')).toBe('memory')
+    expect(useInteractiveStore.getState().submode).toBe('timeline')
+    expect(window.localStorage.getItem('nova.interactive.submode.v1')).toBe('timeline')
   })
 
   it('merges a persisted turn by appending it to the active branch snapshot', () => {
@@ -201,6 +213,9 @@ describe('interactive-store', () => {
     expect(next.turns.map((item) => item.id)).toEqual(['turn-1', 'turn-2'])
     expect(next.current_turn?.id).toBe('turn-2')
     expect(next.state).toEqual({ scene: { location: '门外' } })
+    expect(next.director_plan).toBeUndefined()
+    expect(next.director_plan_status?.status).toBe('running')
+    expect(next.director_plan_status?.completed_docs).toBe(1)
     expect(next.graph?.branches[0].head).toBe('turn-2')
   })
 
@@ -233,6 +248,7 @@ describe('interactive-store', () => {
 
   it('applies a persisted turn through the store only for the active story and branch', () => {
     useInteractiveStore.setState({
+      stories: [storySummary('story-1', '当前故事')],
       currentStoryId: 'story-1',
       currentBranchId: 'main',
       snapshot: snapshot([turn('turn-1', null, '醒来', '雾气很重。')]),
@@ -244,6 +260,7 @@ describe('interactive-store', () => {
     expect(applied?.turns.map((item) => item.id)).toEqual(['turn-1', 'turn-2'])
     expect(useInteractiveStore.getState().snapshot?.current_turn?.id).toBe('turn-2')
     expect(useInteractiveStore.getState().branches[0].head).toBe('turn-2')
+    expect(useInteractiveStore.getState().stories[0].turn_count).toBe(2)
 
     const ignored = useInteractiveStore.getState().applyTurnPersisted({
       ...persistedEvent(turn('other-turn', null, '别处', '不应合并。')),
@@ -252,7 +269,39 @@ describe('interactive-store', () => {
     expect(ignored).toBeNull()
     expect(useInteractiveStore.getState().snapshot?.current_turn?.id).toBe('turn-2')
   })
+
+  it('syncs the story turn count when a branch snapshot is loaded', () => {
+    useInteractiveStore.setState({
+      stories: [storySummary('story-1', '当前故事')],
+      currentStoryId: 'story-1',
+    })
+
+    useInteractiveStore.getState().setSnapshot({
+      ...snapshot([turn('turn-1', null, '醒来', '雾气很重。')]),
+      turn_count: 7,
+    })
+
+    expect(useInteractiveStore.getState().stories[0].turn_count).toBe(7)
+  })
 })
+
+function storySummary(id: string, title: string): StorySummary {
+  return {
+    id,
+    title,
+    origin: '',
+    story_teller_id: 'classic',
+    story_director_id: 'default',
+    choice_count: 5,
+    reply_target_chars: 2000,
+    opening: { mode: 'ai' },
+    created_at: '',
+    updated_at: '',
+    branches: 1,
+    events: 0,
+    turn_count: 0,
+  }
+}
 
 function snapshot(turns: TurnEvent[]): Snapshot {
   const last = turns[turns.length - 1]
@@ -282,7 +331,9 @@ function persistedEvent(turnEvent: TurnEvent): InteractiveTurnPersistedEvent {
   return {
     story_id: 'story-1',
     branch_id: 'main',
+    turn_count: 2,
     turn: turnEvent,
+    director_plan_status: directorPlanStatus(),
     state: { scene: { location: '门外' } },
     graph: {
       nodes: [{
@@ -298,6 +349,24 @@ function persistedEvent(turnEvent: TurnEvent): InteractiveTurnPersistedEvent {
       branches: [{ id: 'main', head: turnEvent.id, created_at: '', current: true }],
     },
     branches: [{ id: 'main', head: turnEvent.id, created_at: '', current: true }],
+    context_compaction: null,
+  }
+}
+
+function directorPlanStatus() {
+  return {
+    story_id: 'story-1',
+    branch_id: 'main',
+    status: 'running',
+    summary: '后台导演正在规划开局。',
+    source_turn_id: 'turn-2',
+    updated_at: '2026-06-28T00:00:00Z',
+    planned_docs: 1,
+    completed_docs: 1,
+    doc_bytes: 1200,
+    visible_bytes: 320,
+    start_ready: false,
+    blocking: true,
   }
 }
 

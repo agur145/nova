@@ -1,8 +1,11 @@
-import type { SSEEvent } from './types'
+import { parseJsonEventStream, uiMessageChunkSchema, type UIMessageChunk } from 'ai'
 import i18next from '@/i18n'
 import { toast } from 'sonner'
 
+export { parseSSEStream } from './sse'
+
 export const jsonHeaders = { 'Content-Type': 'application/json' }
+const REQUEST_ID_HEADER = 'X-Request-ID'
 const BACKEND_UNAVAILABLE_TOAST_ID = 'nova-backend-unavailable'
 const BACKEND_UNAVAILABLE_STATUS = new Set([502, 503, 504])
 const REMOTE_ACCESS_CREDENTIALS_KEY = 'nova.remoteAccess.credentials'
@@ -10,6 +13,25 @@ const REMOTE_ACCESS_REQUIRED_EVENT = 'nova:remote-access-required'
 
 type APIRequestInit = RequestInit & {
   suppressBackendUnavailableToast?: boolean
+}
+
+/** HTTP/API domain failure with transport and machine-readable backend context intact. */
+export class APIError extends Error {
+  readonly status: number
+  readonly code?: string
+  readonly details?: Record<string, unknown>
+  readonly requestID?: string
+  readonly payload: Record<string, unknown>
+
+  constructor(message: string, options: { status: number; code?: string; details?: Record<string, unknown>; requestID?: string; payload?: Record<string, unknown> }) {
+    super(formatAPIErrorMessage(message, options.requestID))
+    this.name = 'APIError'
+    this.status = options.status
+    this.code = options.code
+    this.details = options.details
+    this.requestID = options.requestID
+    this.payload = options.payload ?? {}
+  }
 }
 
 export async function fetchAPI(input: RequestInfo | URL, init?: APIRequestInit): Promise<Response> {
@@ -38,57 +60,99 @@ export async function requestJSON<T>(url: string, init?: RequestInit): Promise<T
     }
   }
   if (!res.ok) {
-    throw new Error(data.error || `HTTP ${res.status}`)
+    throw apiErrorFromPayload(res.status, data, res.headers.get(REQUEST_ID_HEADER))
   }
   return data as T
 }
 
+/** Preserve status and structured error details for streaming HTTP requests. */
+export async function responseAPIError(res: Response): Promise<APIError> {
+  const text = await res.text()
+  let payload: Record<string, unknown> = {}
+  if (text) {
+    try {
+      payload = JSON.parse(text) as Record<string, unknown>
+    } catch {
+      payload = { error: text }
+    }
+  }
+  return apiErrorFromPayload(res.status, payload, res.headers.get(REQUEST_ID_HEADER))
+}
+
+function apiErrorFromPayload(status: number, payload: Record<string, unknown>, responseRequestID?: string | null): APIError {
+  const message = typeof payload.error === 'string' && payload.error ? payload.error : `HTTP ${status}`
+  const code = typeof payload.code === 'string' && payload.code ? payload.code : undefined
+  const details = payload.details && typeof payload.details === 'object' && !Array.isArray(payload.details)
+    ? payload.details as Record<string, unknown>
+    : undefined
+  const payloadRequestID = typeof payload.request_id === 'string' ? payload.request_id.trim() : ''
+  const requestID = responseRequestID?.trim() || payloadRequestID || undefined
+  return new APIError(message, { status, code, details, requestID, payload })
+}
+
+function formatAPIErrorMessage(message: string, requestID?: string): string {
+  const normalized = requestID?.trim()
+  if (!normalized) return message
+  return `${message} · ${i18next.t('common.logId')}: ${normalized}`
+}
+
+/** Keeps localized UI copy while retaining the server correlation ID for support. */
+export function withErrorLogID(message: string, source: unknown): string {
+  const requestID = requestIDFromError(source)
+  if (!requestID || message.includes(requestID)) return message
+  return formatAPIErrorMessage(message, requestID)
+}
+
+function requestIDFromError(source: unknown, seen = new Set<object>()): string | undefined {
+  if (typeof source === 'string') return requestIDFromText(source)
+  if (!source || typeof source !== 'object' || seen.has(source)) return undefined
+  seen.add(source)
+
+  const record = source as Record<string, unknown>
+  for (const key of ['requestID', 'requestId', 'request_id', 'logID', 'logId', 'log_id']) {
+    const value = record[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  if (typeof record.message === 'string') {
+    const requestID = requestIDFromText(record.message)
+    if (requestID) return requestID
+  }
+  for (const key of ['payload', 'details', 'cause']) {
+    const requestID = requestIDFromError(record[key], seen)
+    if (requestID) return requestID
+  }
+  return undefined
+}
+
+function requestIDFromText(value: string): string | undefined {
+  const match = value.match(/(?:日志\s*ID(?:\s*\/\s*Log\s*ID)?|Log\s*ID|request_id)\s*[:=]\s*([A-Za-z0-9][A-Za-z0-9._:-]*)/i)
+  return match?.[1]
+}
+
 export async function readErrorMessage(res: Response): Promise<string> {
   let message = `HTTP ${res.status}`
+  let requestID = res.headers.get(REQUEST_ID_HEADER)?.trim() || undefined
   notifyBackendUnavailableIfNeeded(res.url || '/api', res.status)
   try {
     const data = await res.json()
     message = data.error || message
+    requestID ||= (typeof data.request_id === 'string' && data.request_id.trim()) || undefined
   } catch {
     // keep HTTP fallback
   }
-  return message
+  return formatAPIErrorMessage(message, requestID)
 }
 
-export function parseSSEStream<T extends SSEEvent = SSEEvent>(body: ReadableStream<Uint8Array>): ReadableStream<T> {
-  const reader = body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  return new ReadableStream<T>({
-    async pull(controller) {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) {
-          controller.close()
-          return
-        }
-        buffer += decoder.decode(value, { stream: true })
-
-        const events = buffer.split('\n\n')
-        buffer = events.pop() || ''
-
-        for (const eventStr of events) {
-          if (!eventStr.trim()) continue
-          const lines = eventStr.split('\n')
-          let event = ''
-          let data = ''
-          for (const line of lines) {
-            if (line.startsWith('event: ')) event = line.slice(7)
-            else if (line.startsWith('data: ')) data = line.slice(6)
-          }
-          if (event) {
-            controller.enqueue({ event, data } as T)
-          }
-        }
-      }
+export function parseUIMessageStream(body: ReadableStream<Uint8Array>): ReadableStream<UIMessageChunk> {
+  return parseJsonEventStream({
+    stream: body,
+    schema: uiMessageChunkSchema,
+  }).pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      if (!chunk.success) throw chunk.error
+      controller.enqueue(chunk.value)
     },
-  })
+  }))
 }
 
 export function setRemoteAccessCredentials(username: string, password: string) {
@@ -101,6 +165,19 @@ export function clearRemoteAccessCredentials() {
   window.sessionStorage.removeItem(REMOTE_ACCESS_CREDENTIALS_KEY)
 }
 
+/** Returns the tab-scoped Basic credential that a SharedWorker cannot read itself. */
+export function getRemoteAccessAuthorization(): string | undefined {
+  const credentials = readRemoteAccessCredentials()
+  if (!credentials) return undefined
+  return `Basic ${encodeBasicAuth(credentials.username, credentials.password)}`
+}
+
+/** Applies the same login challenge behavior used by regular API requests. */
+export function handleRemoteAccessChallenge() {
+  clearRemoteAccessCredentials()
+  window.dispatchEvent(new CustomEvent(REMOTE_ACCESS_REQUIRED_EVENT))
+}
+
 function notifyBackendUnavailableIfNeeded(input: RequestInfo | URL, status: number) {
   if (!BACKEND_UNAVAILABLE_STATUS.has(status) || !isLocalAPIRequest(input)) return
   notifyBackendUnavailable()
@@ -109,17 +186,16 @@ function notifyBackendUnavailableIfNeeded(input: RequestInfo | URL, status: numb
 function notifyRemoteAccessRequiredIfNeeded(input: RequestInfo | URL, res: Response) {
   if (res.status !== 401 || !isLocalAPIRequest(input)) return
   if (!res.headers.get('WWW-Authenticate')?.toLowerCase().includes('basic')) return
-  clearRemoteAccessCredentials()
-  window.dispatchEvent(new CustomEvent(REMOTE_ACCESS_REQUIRED_EVENT))
+  handleRemoteAccessChallenge()
 }
 
 function withRemoteAccessAuth(input: RequestInfo | URL, init?: RequestInit): RequestInit | undefined {
   if (!isLocalAPIRequest(input)) return init
-  const credentials = readRemoteAccessCredentials()
-  if (!credentials) return init
+  const authorization = getRemoteAccessAuthorization()
+  if (!authorization) return init
   const headers = new Headers(init?.headers ?? requestHeaders(input))
   if (!headers.has('Authorization')) {
-    headers.set('Authorization', `Basic ${encodeBasicAuth(credentials.username, credentials.password)}`)
+    headers.set('Authorization', authorization)
   }
   return { ...init, headers }
 }

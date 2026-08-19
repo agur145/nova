@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"regexp"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -33,6 +34,11 @@ func parseChangelogMessagesForLocale(content, locale string) []Message {
 		label, publishedAt := parseChangelogHeading(currentHeading)
 		if strings.TrimSpace(label) == "" {
 			label = strings.TrimSpace(currentHeading)
+		}
+		if isUnreleasedChangelogLabel(label) {
+			currentHeading = ""
+			body = body[:0]
+			return
 		}
 		rawBodyText := trimBlankLines(strings.Join(body, "\n"))
 		if strings.TrimSpace(rawBodyText) == "" {
@@ -378,7 +384,21 @@ func parseChangelogHeading(heading string) (string, string) {
 	if len(matches) != 3 {
 		return heading, ""
 	}
-	return strings.TrimSpace(matches[1]), strings.TrimSpace(matches[2])
+	label := strings.TrimSpace(matches[1])
+	dateStr := strings.TrimSpace(matches[2])
+	if dateStr == "" {
+		return label, ""
+	}
+	parsed, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		return label, dateStr
+	}
+	return label, parsed.UTC().Format(time.RFC3339)
+}
+
+func isUnreleasedChangelogLabel(label string) bool {
+	normalized := strings.TrimSpace(strings.ToLower(label))
+	return normalized == "unreleased"
 }
 
 func changelogID(label, body string) string {

@@ -1,19 +1,22 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	agentrun "denova/internal/agents/run"
 	"flag"
 	"fmt"
-	"log"
+	"io"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 
 	"denova/config"
-	"denova/internal/agent"
 	"denova/internal/api"
 	"denova/internal/app"
 	"denova/internal/buildinfo"
@@ -38,19 +41,32 @@ func main() {
 	flag.StringVar(&port, "port", port, "HTTP 服务端口")
 	flag.StringVar(&frontendPort, "frontend-port", frontendPort, "前端开发服务端口")
 	flag.BoolVar(&dev, "dev", false, "开发模式：同时启动 Vite 前端 dev server")
-	flag.BoolVar(&devMode, "dev-mode", false, "开发启动模式：由 bootstrap.sh 传入，开启开发诊断能力")
+	flag.BoolVar(&devMode, "dev-mode", false, "开发启动模式：由 scripts/bootstrap.sh 传入，开启开发诊断能力")
 	flag.BoolVar(&noOpen, "no-open", false, "启动服务后不自动打开浏览器")
 	flag.Parse()
 
 	cfg.DevMode = dev || devMode
-	agent.SetModelInputLoggingEnabled(cfg.DevMode && cfg.LLMInputLogEnabled)
+	agentrun.SetModelInputLoggingEnabled(cfg.DevMode && cfg.LLMInputLogEnabled)
+	agentrun.SetTraceRuntimeConfig(cfg.TraceCaptureLevel, cfg.TraceExporter, cfg.TraceRetentionRuns)
+	agentrun.SetTraceContentCaptureEnabled(cfg.Labs.DeveloperMode)
 
-	logPath, closeLog := setupLogging("./log")
+	logPath, logOutput, closeLog := setupLogging("./log")
 	defer closeLog()
-	observability.ConfigureStructuredLogging()
-	log.Printf("[startup] 日志输出已启用 dir=./log current_file=%s", logPath)
-	port = selectStartupPort(port, shouldAutoPickPort())
-	frontendPort = selectFrontendPort(frontendPort)
+	observability.ConfigureStructuredLogging(logOutput)
+	slog.InfoContext(context.Background(), fmt.Sprintf("[startup] 日志输出已启用 dir=./log current_file=%s", logPath))
+	requestedPort := port
+	listenHost := config.HTTPListenHost(cfg.AllowLANAccess)
+	listener, port, err := reserveBackendListener(listenHost, requestedPort, !portWasExplicitlySet(os.Args[1:]))
+	if err != nil {
+		reportBackendPortConflict(os.Stderr, requestedPort, err)
+		waitForAnyKey(os.Stdin)
+		os.Exit(1)
+	}
+	defer func() { _ = listener.Close() }()
+	if port != requestedPort {
+		reportBackendPortFallback(os.Stderr, requestedPort, port)
+	}
+	frontendPort = selectFrontendPort(frontendPort, port)
 	if runtimeWebPort, err := strconv.Atoi(port); err == nil {
 		cfg.RuntimeWebPort = runtimeWebPort
 	}
@@ -78,10 +94,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "初始化应用失败: %v\n", err)
 		os.Exit(1)
 	}
+	defer application.Close()
 
 	// 启动 HTTP 服务
-	srv := api.NewServer(application, port)
-	listenHost := config.HTTPListenHost(cfg.AllowLANAccess)
+	srv := api.NewServerWithListener(application, port, listener)
 
 	// 打印启动信息
 	url := fmt.Sprintf("http://localhost:%s", port)
@@ -104,17 +120,38 @@ func main() {
 
 	// 开发模式：同时启动 Vite dev server
 	if dev {
-		go startViteDev(frontendPort, listenHost)
+		runBackground("vite-dev-server", func() {
+			startViteDev(frontendPort, listenHost, port)
+		})
 	}
 	if !noOpen {
 		if dev {
-			go openBrowser(frontendURL)
+			runBackground("open-frontend", func() {
+				openBrowser(frontendURL)
+			})
 		} else {
-			go openBrowser(url)
+			runBackground("open-backend", func() {
+				openBrowser(url)
+			})
 		}
 	}
 
 	srv.Run()
+}
+
+// runBackground is the process-entry goroutine boundary. A development helper
+// or browser launcher must never bring down the long-lived backend on panic.
+func runBackground(scope string, run func()) {
+	go func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				slog.ErrorContext(context.Background(), fmt.Sprintf("[startup] background task panic recovered scope=%s err=%v", scope, recovered))
+			}
+		}()
+		if run != nil {
+			run()
+		}
+	}()
 }
 
 func hasVersionArg(args []string) bool {
@@ -143,7 +180,7 @@ func openBrowser(url string) {
 }
 
 // startViteDev 启动 Vite 前端开发服务器
-func startViteDev(port, host string) {
+func startViteDev(port, host, backendPort string) {
 	// 查找 web 目录
 	webDir := "./web"
 	if _, err := os.Stat(webDir); os.IsNotExist(err) {
@@ -157,11 +194,30 @@ func startViteDev(port, host string) {
 
 	cmd := exec.Command("pnpm", "dev", "--host", host, "--port", port)
 	cmd.Dir = webDir
+	cmd.Env = viteDevEnv(os.Environ(), port, backendPort)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Vite dev server 退出: %v\n", err)
 	}
+}
+
+func viteDevEnv(base []string, frontendPort, backendPort string) []string {
+	env := setEnvValue(base, "DENOVA_BACKEND_PORT", backendPort)
+	env = setEnvValue(env, "DENOVA_FRONTEND_PORT", frontendPort)
+	return env
+}
+
+func setEnvValue(base []string, key, value string) []string {
+	prefix := key + "="
+	env := make([]string, 0, len(base)+1)
+	for _, item := range base {
+		if strings.HasPrefix(item, prefix) {
+			continue
+		}
+		env = append(env, item)
+	}
+	return append(env, prefix+value)
 }
 
 func defaultPort(cfg *config.Config) string {
@@ -178,70 +234,111 @@ func defaultFrontendPort(cfg *config.Config) string {
 	return "5173"
 }
 
-func shouldAutoPickPort() bool {
-	if envCompat("DENOVA_BACKEND_PORT", "NOVA_BACKEND_PORT") != "" {
-		return false
-	}
-	explicit := false
-	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "port" {
-			explicit = true
-		}
-	})
-	return !explicit
-}
-
-func selectStartupPort(preferred string, autoPick bool) string {
-	if portAvailable(preferred) {
-		return preferred
+// reserveBackendListener atomically claims the selected HTTP port. The listener
+// is passed to the HTTP server later so another process cannot take the port
+// between availability detection and server startup.
+func reserveBackendListener(host, preferred string, autoPick bool) (net.Listener, string, error) {
+	listener, err := listenOnPort(host, preferred)
+	if err == nil {
+		return listener, preferred, nil
 	}
 	if !autoPick {
-		log.Printf("[startup] HTTP 端口不可用 port=%s auto_pick=false", preferred)
-		return preferred
+		return nil, preferred, err
 	}
 
-	next, err := findAvailablePort(preferred, 20)
-	if err != nil {
-		log.Printf("[startup] HTTP 端口不可用且自动选择失败 port=%s err=%v", preferred, err)
-		return preferred
+	start, parseErr := strconv.Atoi(preferred)
+	if parseErr != nil || start < 1 || start > 65535 {
+		return nil, preferred, fmt.Errorf("invalid port %q", preferred)
 	}
+	for candidate := start + 1; candidate <= 65535 && candidate <= start+20; candidate++ {
+		port := strconv.Itoa(candidate)
+		listener, candidateErr := listenOnPort(host, port)
+		if candidateErr == nil {
+			return listener, port, nil
+		}
+	}
+	return nil, preferred, fmt.Errorf("no available port found in %d-%d: %w", start+1, min(start+20, 65535), err)
+}
 
-	fmt.Fprintf(os.Stderr, "提示: 端口 %s 已被占用，已自动改用 %s\n", preferred, next)
-	log.Printf("[startup] HTTP 端口 %s 已被占用，自动改用 %s", preferred, next)
-	return next
+func listenOnPort(host, port string) (net.Listener, error) {
+	return net.Listen("tcp", net.JoinHostPort(host, port))
+}
+
+func portWasExplicitlySet(args []string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		if arg == "-port" || arg == "--port" || strings.HasPrefix(arg, "-port=") || strings.HasPrefix(arg, "--port=") {
+			return true
+		}
+	}
+	return false
+}
+
+func reportBackendPortFallback(output io.Writer, requestedPort, selectedPort string) {
+	fmt.Fprintf(output, "提示：端口 %s 已被占用，已自动改用 %s。\n", requestedPort, selectedPort)
+	fmt.Fprintf(output, "Notice: port %s is in use; switched to %s.\n", requestedPort, selectedPort)
+	slog.WarnContext(context.Background(), fmt.Sprintf("[startup] HTTP port %s is unavailable; switched to %s", requestedPort, selectedPort))
+}
+
+func reportBackendPortConflict(output io.Writer, port string, err error) {
+	fmt.Fprintf(output, "错误：显式指定的端口 %s 不可用：%v\n", port, err)
+	fmt.Fprintf(output, "Error: explicitly specified port %s is unavailable: %v\n", port, err)
+	fmt.Fprintln(output, "请释放该端口或指定其他 --port 值。按任意键（或 Enter）退出。")
+	fmt.Fprintln(output, "Release the port or choose another --port value. Press any key (or Enter) to exit.")
+	slog.WarnContext(context.Background(), fmt.Sprintf("[startup] explicitly specified HTTP port is unavailable port=%s err=%v", port, err))
+}
+
+func waitForAnyKey(input io.Reader) {
+	_, _ = bufio.NewReader(input).ReadByte()
 }
 
 // selectFrontendPort 为前端 Vite dev server 自动选择一个可用端口。
 // 与 HTTP 后端端口不同，前端端口总是尝试自动选择（因为 Vite 不负责端口协商）。
-func selectFrontendPort(preferred string) string {
-	if portAvailable(preferred) {
+func selectFrontendPort(preferred string, reservedPorts ...string) string {
+	if !portReserved(preferred, reservedPorts...) && portAvailable(preferred) {
 		return preferred
 	}
 
-	next, err := findAvailablePort(preferred, 20)
+	next, err := findAvailablePort(preferred, 20, reservedPorts...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "警告: 前端端口 %s 不可用且自动选择失败: %v\n", preferred, err)
-		log.Printf("[startup] 前端端口 %s 不可用且自动选择失败 err=%v", preferred, err)
+		slog.ErrorContext(context.Background(), fmt.Sprintf("[startup] 前端端口 %s 不可用且自动选择失败 err=%v", preferred, err))
 		return preferred
 	}
 
 	fmt.Fprintf(os.Stderr, "提示: 前端端口 %s 已被占用，已自动改用 %s\n", preferred, next)
-	log.Printf("[startup] 前端端口 %s 已被占用，自动改用 %s", preferred, next)
+	slog.InfoContext(context.Background(), fmt.Sprintf("[startup] 前端端口 %s 已被占用，自动改用 %s", preferred, next))
 	return next
 }
 
-func findAvailablePort(preferred string, attempts int) (string, error) {
+func findAvailablePort(preferred string, attempts int, reservedPorts ...string) (string, error) {
 	start, err := strconv.Atoi(preferred)
 	if err != nil || start <= 0 || start > 65535 {
 		return "", fmt.Errorf("端口号无效: %s", preferred)
 	}
 	for port := start + 1; port <= 65535 && port <= start+attempts; port++ {
 		candidate := strconv.Itoa(port)
-		if portAvailable(candidate) {
+		if !portReserved(candidate, reservedPorts...) && portAvailable(candidate) {
 			return candidate, nil
 		}
 	}
 	return "", fmt.Errorf("未找到可用端口: %d-%d", start+1, start+attempts)
+}
+
+func portReserved(port string, reservedPorts ...string) bool {
+	value, err := strconv.Atoi(port)
+	if err != nil {
+		return false
+	}
+	for _, reserved := range reservedPorts {
+		reservedValue, err := strconv.Atoi(reserved)
+		if err == nil && reservedValue == value {
+			return true
+		}
+	}
+	return false
 }
 
 func portAvailable(port string) bool {

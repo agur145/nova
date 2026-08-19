@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'r
 import { Check, ChevronRight, Compass, Loader2, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
-import { fetchSettings } from '@/features/settings/api'
-import type { ChatMessage } from '@/lib/api'
+import { fetchSettings, refreshSettings } from '@/features/settings/api'
+import type { AgentUIMessage } from '@/lib/agent-ui'
+import { hasCompletedAgentTurn } from '@/lib/agent-message-view'
 import type { RightPanel, WorkspaceMode } from '@/stores/workspace-store'
 import { ONBOARDING_OPEN_EVENT } from './events'
 import { hasUsableLanguageModel } from './model-status'
@@ -39,7 +40,7 @@ interface OnboardingGuideProps {
   workspace: string
   booksCount: number
   currentBookName: string
-  messages: ChatMessage[]
+  messages: AgentUIMessage[]
   isStreaming: boolean
   onNavigate: (target: OnboardingNavigationTarget, prompt?: string) => void
 }
@@ -86,17 +87,15 @@ export function OnboardingGuide({
   const [tourIndex, setTourIndex] = useState(0)
   const [anchorRect, setAnchorRect] = useState<AnchorRect | null>(null)
 
-  const completedAgentTurn = useMemo(() => {
-    if (isStreaming) return false
-    return messages.some((message) =>
-      (message.role === 'assistant' || message.role === 'tool_result') &&
-      (Boolean(message.content?.trim()) || message.status === 'success'),
-    )
-  }, [isStreaming, messages])
+  const completedAgentTurn = useMemo(
+    () => hasCompletedAgentTurn(messages, isStreaming),
+    [isStreaming, messages],
+  )
 
-  const refreshModelState = useCallback(() => {
+  const refreshModelState = useCallback((fresh = false) => {
     setLoadingSettings(true)
-    fetchSettings()
+    const request = fresh ? refreshSettings() : fetchSettings()
+    request
       .then((settings) => {
         setModelReady(hasUsableLanguageModel(settings.effective))
       })
@@ -109,8 +108,9 @@ export function OnboardingGuide({
 
   useEffect(() => {
     refreshModelState()
-    window.addEventListener('nova:settings-updated', refreshModelState)
-    return () => window.removeEventListener('nova:settings-updated', refreshModelState)
+    const onSettingsUpdated = () => refreshModelState(true)
+    window.addEventListener('nova:settings-updated', onSettingsUpdated)
+    return () => window.removeEventListener('nova:settings-updated', onSettingsUpdated)
   }, [refreshModelState])
 
   useEffect(() => {
@@ -283,7 +283,6 @@ export function OnboardingGuide({
             onClick={skip}
             className="nova-nav-item -mr-1 -mt-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-[8px] text-[var(--nova-text-faint)] hover:text-[var(--nova-text)]"
             aria-label={t('onboarding.skip')}
-            title={t('onboarding.skip')}
           >
             <X className="h-3.5 w-3.5" />
           </button>

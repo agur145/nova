@@ -1,8 +1,22 @@
 import { create } from 'zustand'
 
 export type RightPanel = 'ai' | 'lore' | 'creator' | 'teller' | 'outline' | 'characters' | 'versions' | null
-export type BottomPanel = 'versions' | 'problems' | null
-export type WorkspaceMode = 'ide' | 'interactive' | 'books' | 'skills' | 'agents' | 'automations'
+type BottomPanel = 'versions' | 'problems' | null
+export type WorkspaceMode = 'ide' | 'interactive' | 'books' | 'skills' | 'agents' | 'automations' | 'agentchat' | 'trajectory'
+
+/**
+ * Shared top-level menu modes, siblings of the two content modes (writing / interactive).
+ * Entering one never changes the user's content mode, and leaving returns to it — clicking a
+ * top-level menu item must not switch between writing and game mode on its own.
+ */
+const SHARED_WORKSPACE_MODES = ['books', 'skills', 'agents', 'automations', 'agentchat', 'trajectory'] as const
+
+export type SharedWorkspaceMode = (typeof SHARED_WORKSPACE_MODES)[number]
+
+/** Reports whether a mode belongs to the shared top-level menu. */
+export function isSharedWorkspaceMode(mode: WorkspaceMode): mode is SharedWorkspaceMode {
+  return (SHARED_WORKSPACE_MODES as readonly WorkspaceMode[]).includes(mode)
+}
 
 const MODE_STORAGE_KEY = 'nova:mode'
 const CONTENT_MODE_STORAGE_KEY = 'nova:content-mode'
@@ -18,11 +32,13 @@ function readInitialRightPanel(): RightPanel {
   if (typeof window === 'undefined') return 'ai'
   const stored = window.localStorage.getItem(RIGHT_PANEL_STORAGE_KEY)
   if (stored === null) return 'ai'
+  // Beta migration: Change Review moved from the right panel into the editor.
+  if (stored === 'review') return 'ai'
   return isRightPanel(stored) ? stored : 'ai'
 }
 
 function isWorkspaceMode(value: unknown): value is WorkspaceMode {
-  return value === 'ide' || value === 'interactive' || value === 'books' || value === 'skills' || value === 'agents' || value === 'automations'
+  return value === 'ide' || value === 'interactive' || value === 'books' || value === 'skills' || value === 'agents' || value === 'automations' || value === 'agentchat' || value === 'trajectory'
 }
 
 function isRightPanel(value: unknown): value is RightPanel {

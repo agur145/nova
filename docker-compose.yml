@@ -4,7 +4,8 @@ services:
       context: .
       args:
         DENOVA_VERSION: ${DENOVA_VERSION:-docker}
-    image: denova:local
+    image: ${DENOVA_IMAGE:-denova:local}
+    init: true
     restart: unless-stopped
     ports:
       - "${DENOVA_HOST_PORT:-8080}:8080"
@@ -14,6 +15,7 @@ services:
       DENOVA_SKILLS_DIR: /app/skills
       DENOVA_WEB_DIR: /app/web
       DENOVA_ALLOW_LAN_ACCESS: "true"
+      DENOVA_WORKSPACE: ${DENOVA_WORKSPACE:-}
       DENOVA_REMOTE_ACCESS_USERNAME: ${DENOVA_REMOTE_ACCESS_USERNAME:?set DENOVA_REMOTE_ACCESS_USERNAME in .env}
       DENOVA_REMOTE_ACCESS_PASSWORD: ${DENOVA_REMOTE_ACCESS_PASSWORD:?set DENOVA_REMOTE_ACCESS_PASSWORD in .env}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -22,8 +24,6 @@ services:
       OPENAI_IMAGE_API_KEY: ${OPENAI_IMAGE_API_KEY:-}
       OPENAI_IMAGE_BASE_URL: ${OPENAI_IMAGE_BASE_URL:-}
       OPENAI_IMAGE_MODEL: ${OPENAI_IMAGE_MODEL:-}
+      DENOVA_SEARXNG_BASE_URL: ${DENOVA_SEARXNG_BASE_URL:-}
     volumes:
-      - denova-data:/data
-
-volumes:
-  denova-data:
+      - .data:/data

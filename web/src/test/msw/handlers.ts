@@ -1,5 +1,35 @@
 import { http, HttpResponse } from 'msw'
 
+function conversationConfigSnapshot(mode: string, changes: Record<string, unknown> = {}, revision = 1) {
+  return HttpResponse.json({
+    agent_kind: mode === 'interactive'
+      ? 'interactive_story'
+      : mode === 'config_manager'
+        ? 'config_manager'
+        : mode === 'agent_chat'
+          ? 'general'
+          : 'ide',
+    profile_id: 'default',
+    thinking_level: mode === 'interactive' ? 'off' : 'medium',
+    approval_mode: 'write',
+    ...changes,
+    revision,
+  })
+}
+
+async function patchConversationConfigResponse(request: Request) {
+  const body = await request.json() as {
+    binding?: { mode?: string }
+    base_revision?: number
+    changes?: Record<string, unknown>
+  }
+  return conversationConfigSnapshot(
+    body.binding?.mode || 'writing',
+    body.changes,
+    (body.base_revision || 0) + 1,
+  )
+}
+
 export const handlers = [
   http.get('/api/messages', () =>
     HttpResponse.json({
@@ -60,6 +90,7 @@ export const handlers = [
   ),
   http.get('/api/chat/active', () => HttpResponse.json({ active: false })),
   http.get('/api/skills', () => HttpResponse.json({ skills: [] })),
+  http.get('/api/projects/:projectId/skills', () => HttpResponse.json({ scopes: [], skills: [] })),
   http.get('/api/interactive/stories', () =>
     HttpResponse.json({
       current_story_id: 'st_1',
@@ -86,29 +117,6 @@ export const handlers = [
       state: { on_stage: [], characters: {}, events: [] },
     }),
   ),
-  http.get('/api/interactive/stories/:id/memory', ({ params, request }) => {
-    const branch = new URL(request.url).searchParams.get('branch') || 'main'
-    return HttpResponse.json({
-      story_id: params.id,
-      branch_id: branch,
-      entries: [],
-      sync_status: '',
-    })
-  }),
-  http.get('/api/interactive/stories/:id/story-memory', ({ params, request }) => {
-    const branch = new URL(request.url).searchParams.get('branch') || 'main'
-    return HttpResponse.json({
-      story_id: params.id,
-      branch_id: branch,
-      settings: {
-        enabled: true,
-        auto_interval_turns: 3,
-      },
-      structures: [],
-      records: [],
-      sync_status: '',
-    })
-  }),
   http.get('/api/interactive/stories/:id/branches', () =>
     HttpResponse.json({
       branches: [{ id: 'main', head: '', created_at: '', current: true }],
@@ -121,26 +129,73 @@ export const handlers = [
           id: 'classic',
           name: '经典导演',
           description: '平衡叙事',
-          random_event_rate: 0.15,
+			event_frequency: 'balanced',
           tags: ['通用'],
           custom: false,
         },
       ],
     }),
   ),
-  http.get('/api/workspace/file', () =>
+  http.get('/api/styles', () =>
     HttpResponse.json({
-      path: 'setting/characters.md',
-      content: '# Characters',
+      styles: [
+        {
+          name: '克制细腻',
+          description: '动作、对白和停顿承载情绪',
+          path: '/tmp/.denova/styles/restraint.md',
+          display_path: '.denova/styles/restraint.md',
+        },
+      ],
     }),
   ),
-  http.get('/api/workspace/summary', () =>
+  http.post('/api/styles', async ({ request }) => {
+    const body = await request.json() as { name?: string; filename?: string }
+    const filename = body.filename || 'style.md'
+    return HttpResponse.json({
+      name: body.name || filename,
+      description: '',
+      path: `/tmp/.denova/styles/${filename}`,
+      display_path: `.denova/styles/${filename}`,
+    })
+  }),
+  http.get('/api/styles/file', ({ request }) => {
+    const path = new URL(request.url).searchParams.get('path') || '.denova/styles/restraint.md'
+    return HttpResponse.json({
+      reference: {
+        name: '克制细腻',
+        description: '动作、对白和停顿承载情绪',
+        path: `/tmp/${path.replace(/^\.denova\//, '.denova/')}`,
+        display_path: path,
+      },
+      content: '# 克制细腻\n\n动作、对白和停顿承载情绪。\n',
+      revision: 'r1',
+    })
+  }),
+  http.put('/api/styles/file', async ({ request }) => {
+    const body = await request.json() as { path?: string; content?: string }
+    const path = body.path || '.denova/styles/restraint.md'
+    return HttpResponse.json({
+      reference: {
+        name: '克制细腻',
+        description: '动作、对白和停顿承载情绪',
+        path: `/tmp/${path.replace(/^\.denova\//, '.denova/')}`,
+        display_path: path,
+      },
+      content: body.content || '',
+      revision: 'r2',
+    })
+  }),
+  http.get('/api/projects/:projectId/book/summary', ({ params }) =>
     HttpResponse.json({
-      title: '末日开端',
-      author: '',
-      chapter_count: 0,
-      total_words: 0,
-      chapters: [],
+      project_id: String(params.projectId),
+      workspace: `/tmp/${String(params.projectId)}`,
+      summary: {
+        title: '末日开端',
+        author: '',
+        chapter_count: 0,
+        total_words: 0,
+        chapters: [],
+      },
     }),
   ),
   http.get('/api/settings', () =>
@@ -166,7 +221,7 @@ export const handlers = [
         interactive_story: {
           runtime_contract: '互动运行契约测试',
           output_protocol: '互动输出格式测试',
-          editable_system_prompt: 'list_interactive_memories read_interactive_memories',
+          editable_system_prompt: 'search_story_history',
         },
       },
       builtin_agent_prompt_sources: {
@@ -183,7 +238,7 @@ export const handlers = [
           sources: [
             { id: 'runtime_contract', title: '互动运行契约', source: 'Denova runtime', content: '互动运行契约测试' },
             { id: 'output_protocol', title: '互动输出格式', source: 'Denova runtime', content: '互动输出格式测试' },
-            { id: 'flow', title: '流程规则', source: 'Denova built-in', content: 'list_interactive_memories read_interactive_memories', editable: true, field: 'flow_prompt' },
+            { id: 'flow', title: '流程规则', source: 'Denova built-in', content: 'search_story_history', editable: true, field: 'flow_prompt' },
             { id: 'custom', title: '用户自定义', source: 'user/workspace config', content: '', editable: true, field: 'system_prompt' },
           ],
         },
@@ -191,7 +246,42 @@ export const handlers = [
       paths: { nova_dir: '', user_config: '', workspace_config: '' },
     }),
   ),
-  http.get('/api/lore/items', () => HttpResponse.json({ items: [] })),
+  http.get('/api/projects/:projectId/settings', () =>
+    HttpResponse.json({
+      default: {},
+      global: {},
+      user: {},
+      workspace: {},
+      effective: {
+        max_open_tabs: 5,
+        ui_font_family: 'apple-system',
+        ui_font_size: 14,
+        reading_font_family: 'source-han-serif',
+        reading_font_size: 18,
+        interactive_stage_line_height: 1.78,
+      },
+      builtin_agent_prompts: {},
+      builtin_agent_prompt_blocks: {},
+      builtin_agent_prompt_sources: {},
+      resolved_agent_tool_manifests: {},
+      resolved_agent_contexts: {},
+      paths: { nova_dir: '', user_config: '', workspace_config: '' },
+    }),
+  ),
+  http.get('/api/conversation-config', ({ request }) => {
+    const mode = new URL(request.url).searchParams.get('mode') || 'writing'
+    return conversationConfigSnapshot(mode)
+  }),
+  http.patch('/api/conversation-config', ({ request }) => patchConversationConfigResponse(request)),
+  http.get('/api/projects/:projectId/conversation-config', ({ request }) => {
+    const mode = new URL(request.url).searchParams.get('mode') || 'writing'
+    return conversationConfigSnapshot(mode)
+  }),
+  http.patch('/api/projects/:projectId/conversation-config', ({ request }) => patchConversationConfigResponse(request)),
+  http.get('/api/projects/:projectId/book/lore/items', ({ params }) => HttpResponse.json({
+    project_id: String(params.projectId),
+    items: [],
+  })),
   http.get('/api/config-manager/messages', () => HttpResponse.json([])),
   http.post('/api/command', async ({ request }) => {
     const body = (await request.json()) as { command?: string }

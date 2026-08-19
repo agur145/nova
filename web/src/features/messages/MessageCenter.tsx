@@ -1,25 +1,45 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import { Bell, CheckCheck, Loader2 } from 'lucide-react'
+import { ArrowUpRight, Bell, CheckCheck, Loader2, Star } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { MarkdownRenderer } from '@/components/common/MarkdownRenderer'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
-import { formatDateTime, getResolvedLocale } from '@/i18n'
+import { formatDateTime } from '@/i18n'
+import { DENOVA_GITHUB_URL } from '@/lib/product-links'
 import { getMessages, markAllMessagesRead, markMessageRead } from './api'
-import type { ProductMessage } from './types'
+import type { AutomationMessageNavigation, ProductMessage } from './types'
 
-export function MessageCenterButton({ className = '' }: { className?: string }) {
+type MessageFilter = 'all' | 'action' | 'automation' | 'product'
+
+interface MessageCenterButtonProps {
+  className?: string
+  unreadCount?: number
+  onUnreadCountChange?: (count: number) => void
+  onOpenAutomation?: (target: AutomationMessageNavigation) => void
+}
+
+export function MessageCenterButton({ className = '', unreadCount: reportedUnreadCount = 0, onUnreadCountChange, onOpenAutomation }: MessageCenterButtonProps) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState<ProductMessage[]>([])
-  const [unreadCount, setUnreadCount] = useState(0)
+  const [unreadCount, setUnreadCount] = useState(reportedUnreadCount)
   const [activeId, setActiveId] = useState<string | null>(null)
+  const [filter, setFilter] = useState<MessageFilter>('all')
   const [loading, setLoading] = useState(false)
   const [markingAllRead, setMarkingAllRead] = useState(false)
   const [error, setError] = useState('')
   const pendingReadRef = useRef<Set<string>>(new Set())
 
   const activeItem = useMemo(() => items.find((item) => item.id === activeId) || null, [activeId, items])
+  const visibleItems = useMemo(() => items.filter((item) => messageMatchesFilter(item, filter)), [filter, items])
+  const updateUnreadCount = useCallback((count: number) => {
+    const normalized = Math.max(0, count)
+    setUnreadCount(normalized)
+    onUnreadCountChange?.(normalized)
+  }, [onUnreadCountChange])
+
+  useEffect(() => {
+    setUnreadCount(reportedUnreadCount)
+  }, [reportedUnreadCount])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -28,18 +48,19 @@ export function MessageCenterButton({ className = '' }: { className?: string }) 
       const result = await getMessages()
       const nextItems = result.items || []
       setItems(nextItems)
-      setUnreadCount(result.unread_count ?? countUnread(nextItems))
+      updateUnreadCount(result.unread_count ?? countUnread(nextItems))
       setActiveId((current) => current && nextItems.some((item) => item.id === current) ? current : null)
     } catch (e) {
       setError(e instanceof Error ? e.message : t('messages.loadFailed'))
       setItems([])
-      setUnreadCount(0)
     } finally {
       setLoading(false)
     }
-  }, [t])
+  }, [t, updateUnreadCount])
 
-  useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    if (open) void load()
+  }, [load, open])
 
   const selectMessage = useCallback((id: string) => {
     setActiveId(id)
@@ -51,18 +72,18 @@ export function MessageCenterButton({ className = '' }: { className?: string }) 
     const optimisticReadAt = new Date().toISOString()
     const wasUnread = items.some((item) => item.id === id && !item.read_at)
     setItems((current) => current.map((item) => item.id === id && !item.read_at ? { ...item, read_at: optimisticReadAt } : item))
-    if (wasUnread) setUnreadCount((current) => Math.max(0, current - 1))
+    if (wasUnread) updateUnreadCount(unreadCount - 1)
     try {
       const updated = await markMessageRead(id)
       setItems((current) => current.map((item) => item.id === id ? { ...item, ...updated } : item))
     } catch (e) {
-      console.warn('[messages] 标记消息已读失败', e)
+      console.warn('[features/messages/MessageCenter.tsx] marking message as read failed', { id, error: e })
       setError(e instanceof Error ? e.message : t('messages.readFailed'))
       void load()
     } finally {
       pendingReadRef.current.delete(id)
     }
-  }, [items, load, t])
+  }, [items, load, t, unreadCount, updateUnreadCount])
 
   const markAllRead = useCallback(async () => {
     if (unreadCount <= 0 || markingAllRead) return
@@ -70,27 +91,28 @@ export function MessageCenterButton({ className = '' }: { className?: string }) 
     setError('')
     const optimisticReadAt = new Date().toISOString()
     setItems((current) => current.map((item) => item.read_at ? item : { ...item, read_at: optimisticReadAt }))
-    setUnreadCount(0)
+    updateUnreadCount(0)
     try {
       const result = await markAllMessagesRead()
       const nextItems = result.items || []
       setItems(nextItems)
-      setUnreadCount(result.unread_count ?? countUnread(nextItems))
+      updateUnreadCount(result.unread_count ?? countUnread(nextItems))
       setActiveId((current) => current && nextItems.some((item) => item.id === current) ? current : null)
     } catch (e) {
-      console.warn('[messages] 标记全部消息已读失败', e)
+      console.warn('[features/messages/MessageCenter.tsx] marking all messages as read failed', { error: e })
       setError(e instanceof Error ? e.message : t('messages.readFailed'))
       void load()
     } finally {
       setMarkingAllRead(false)
     }
-  }, [load, markingAllRead, t, unreadCount])
+  }, [load, markingAllRead, t, unreadCount, updateUnreadCount])
 
   useEffect(() => {
-    if (!open || activeId || items.length === 0) return
-    const firstUnread = items.find((item) => !item.read_at)
-    setActiveId((firstUnread || items[0]).id)
-  }, [activeId, items, open])
+    if (!open || visibleItems.length === 0) return
+    if (activeId && visibleItems.some((item) => item.id === activeId)) return
+    const firstUnread = visibleItems.find((item) => !item.read_at)
+    setActiveId((firstUnread || visibleItems[0]).id)
+  }, [activeId, open, visibleItems])
 
   useEffect(() => {
     if (!open || !activeItem || activeItem.read_at) return
@@ -103,7 +125,6 @@ export function MessageCenterButton({ className = '' }: { className?: string }) 
         type="button"
         className={`nova-icon-button relative flex items-center justify-center rounded-[var(--nova-radius)] text-[var(--nova-text-muted)] hover:bg-[var(--nova-hover)] hover:text-[var(--nova-text)] ${className}`}
         aria-label={t('messages.open')}
-        title={t('messages.open')}
         onClick={() => setOpen(true)}
       >
         <Bell className="h-4 w-4" />
@@ -131,7 +152,6 @@ export function MessageCenterButton({ className = '' }: { className?: string }) 
                 type="button"
                 className="nova-ui-compact inline-flex shrink-0 items-center gap-1.5 rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-surface)] px-2 py-1 text-xs text-[var(--nova-text-muted)] transition-colors hover:bg-[var(--nova-hover)] hover:text-[var(--nova-text)] disabled:cursor-not-allowed disabled:opacity-50"
                 aria-label={t('messages.markAllRead')}
-                title={t('messages.markAllRead')}
                 disabled={unreadCount <= 0 || markingAllRead}
                 onClick={markAllRead}
               >
@@ -142,18 +162,31 @@ export function MessageCenterButton({ className = '' }: { className?: string }) 
           </SheetHeader>
           <div className="flex min-h-0 flex-1 flex-col md:flex-row">
             <div className="max-h-56 shrink-0 overflow-y-auto border-b border-[var(--nova-border)] md:max-h-none md:w-72 md:border-b-0 md:border-r">
+              <div className="sticky top-0 z-10 flex gap-1 overflow-x-auto border-b border-[var(--nova-border)] bg-[var(--nova-surface-2)] p-2">
+                {(['all', 'action', 'automation', 'product'] as const).map((itemFilter) => (
+                  <button
+                    key={itemFilter}
+                    type="button"
+                    aria-pressed={filter === itemFilter}
+                    className={`shrink-0 rounded-[var(--nova-radius)] px-2 py-1 text-[10px] ${filter === itemFilter ? 'bg-[var(--nova-active)] text-[var(--nova-text)]' : 'text-[var(--nova-text-faint)] hover:text-[var(--nova-text-muted)]'}`}
+                    onClick={() => setFilter(itemFilter)}
+                  >
+                    {t(`messages.filter.${itemFilter}`)}
+                  </button>
+                ))}
+              </div>
               {loading && items.length === 0 ? (
                 <div className="flex h-32 items-center justify-center gap-2 text-xs text-[var(--nova-text-faint)]">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   {t('messages.loading')}
                 </div>
-              ) : items.length === 0 ? (
+              ) : visibleItems.length === 0 ? (
                 <div className="flex h-32 items-center justify-center px-4 text-center text-xs text-[var(--nova-text-faint)]">
                   {error || t('messages.empty')}
                 </div>
               ) : (
                 <div className="p-2">
-                  {items.map((item) => (
+                  {visibleItems.map((item) => (
                     <button
                       key={item.id}
                       type="button"
@@ -179,7 +212,27 @@ export function MessageCenterButton({ className = '' }: { className?: string }) 
                     <div className="mt-1 text-[11px] text-[var(--nova-text-faint)]">{messageMeta(activeItem, t)}</div>
                   </div>
                   {activeItem.type === 'changelog' && <DonationPrompt />}
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{activeItem.body}</ReactMarkdown>
+                  {activeItem.type === 'changelog' && <GitHubStarPrompt />}
+                  {onOpenAutomation && activeItem.task_id && (
+                    <button
+                      type="button"
+                      className="mb-4 inline-flex items-center gap-1.5 rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-active)] px-3 py-1.5 text-xs font-medium text-[var(--nova-text)] hover:bg-[var(--nova-hover)]"
+                      onClick={() => {
+                        onOpenAutomation({
+                          taskId: activeItem.task_id || '',
+                          runId: activeItem.run_id,
+                          inboxId: activeItem.inbox_id,
+                          projectId: activeItem.project_id,
+                          workspace: activeItem.workspace,
+                        })
+                        setOpen(false)
+                      }}
+                    >
+                      <ArrowUpRight className="h-3.5 w-3.5" />
+                      {t(activeItem.action_required ? 'messages.openAutomationAction' : 'messages.openAutomation')}
+                    </button>
+                  )}
+                  <MarkdownRenderer content={activeItem.body} />
                 </article>
               ) : (
                 <div className="flex h-full min-h-48 items-center justify-center text-xs text-[var(--nova-text-faint)]">
@@ -215,6 +268,30 @@ function DonationPrompt() {
   )
 }
 
+function GitHubStarPrompt() {
+  const { t } = useTranslation()
+  return (
+    <section
+      className="mb-4 flex flex-col gap-3 rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[color-mix(in_srgb,var(--nova-surface-2)_88%,transparent)] p-3 text-xs leading-5 text-[var(--nova-text-muted)] shadow-sm backdrop-blur sm:flex-row sm:items-center sm:justify-between"
+      aria-label={t('messages.github.title')}
+    >
+      <div className="min-w-0">
+        <div className="text-sm font-medium text-[var(--nova-text)]">{t('messages.github.title')}</div>
+        <p className="m-0 mt-1">{t('messages.github.description')}</p>
+      </div>
+      <a
+        href={DENOVA_GITHUB_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex shrink-0 items-center gap-1.5 self-start rounded-[var(--nova-radius)] border border-[var(--nova-border)] bg-[var(--nova-surface)] px-3 py-1.5 text-xs font-medium text-[var(--nova-text-muted)] transition-colors hover:bg-[var(--nova-hover)] hover:text-[var(--nova-text)] sm:self-center"
+      >
+        <Star className="h-3.5 w-3.5" />
+        {t('messages.github.star')}
+      </a>
+    </section>
+  )
+}
+
 function countUnread(items: ProductMessage[]) {
   return items.filter((item) => !item.read_at).length
 }
@@ -228,21 +305,27 @@ function messageTitle(item: ProductMessage, t: (key: string, options?: Record<st
 }
 
 function messageMeta(item: ProductMessage, t: (key: string, options?: Record<string, string>) => string) {
-  const parts = [item.type === 'changelog' ? t('messages.type.changelog') : item.type]
+  const parts = [messageTypeLabel(item, t)]
   const date = formatMessagePublishedAt(item.published_at)
   if (date) parts.push(date)
   return parts.join(' · ')
 }
 
+function messageTypeLabel(item: ProductMessage, t: (key: string, options?: Record<string, string>) => string) {
+  if (item.type === 'changelog') return t('messages.type.changelog')
+  if (item.type === 'automation_action') return t('messages.type.automationAction')
+  if (item.type === 'automation') return t('messages.type.automation')
+  return item.type
+}
+
+function messageMatchesFilter(item: ProductMessage, filter: MessageFilter) {
+  if (filter === 'all') return true
+  if (filter === 'action') return Boolean(item.action_required) || item.type === 'automation_action'
+  if (filter === 'automation') return item.type === 'automation' || item.type === 'automation_action'
+  return item.type !== 'automation' && item.type !== 'automation_action'
+}
+
 function formatMessagePublishedAt(value: string | undefined) {
   if (!value) return ''
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    const [year, month, day] = value.split('-').map(Number)
-    return new Intl.DateTimeFormat(getResolvedLocale(), {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).format(new Date(year, month - 1, day))
-  }
   return formatDateTime(value)
 }

@@ -2,19 +2,28 @@ package handlers
 
 import (
 	"context"
+	"errors"
+	"io"
+	"net/url"
 	"os"
 	"strings"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
-	novaApp "denova/internal/app"
+	bookapp "denova/internal/app/book"
+	appsettings "denova/internal/app/settings"
+	"denova/internal/book"
+	projectdomain "denova/internal/project"
 )
+
+const MaxBookCoverUploadBytes int64 = 16 * 1024 * 1024
 
 // handleBooks GET /api/books — 返回当前 Nova 数据目录下实际存在的书籍工作目录。
 func (h *Handlers) HandleBooks(ctx context.Context, c *app.RequestContext) {
 	writeJSON(c, consts.StatusOK, map[string]interface{}{
-		"books": h.app.Books(),
+		"books":     h.app.BookAssets().Books(),
+		"sort_mode": h.app.BookAssets().SortMode(),
 	})
 }
 
@@ -33,16 +42,16 @@ func (h *Handlers) HandleCreateBook(ctx context.Context, c *app.RequestContext) 
 		writeErrorKey(c, consts.StatusBadRequest, "api.books.titleRequired")
 		return
 	}
-	layered, err := h.app.Settings()
+	layered, err := h.app.SettingsService().Snapshot(appsettings.Global())
 	if err != nil {
 		writeError(c, consts.StatusInternalServerError, err.Error())
 		return
 	}
-	if layered.Paths.NovaDir == "" {
+	if layered.Paths.DenovaDir == "" {
 		writeErrorKey(c, consts.StatusInternalServerError, "api.books.novaDirMissing")
 		return
 	}
-	workspace, meta, err := h.app.CreateBook(ctx, layered.Paths.NovaDir, req.Title, req.Author, req.Description)
+	created, err := h.app.CreateBook(ctx, layered.Paths.DenovaDir, req.Title, req.Author, req.Description)
 	if err != nil {
 		status := consts.StatusInternalServerError
 		if strings.Contains(err.Error(), "已存在") {
@@ -52,8 +61,9 @@ func (h *Handlers) HandleCreateBook(ctx context.Context, c *app.RequestContext) 
 		return
 	}
 	writeJSON(c, consts.StatusOK, map[string]interface{}{
-		"workspace": workspace,
-		"book_meta": meta,
+		"project_id": created.ProjectID,
+		"workspace":  created.Workspace,
+		"book_meta":  created.Meta,
 	})
 }
 
@@ -64,7 +74,7 @@ func (h *Handlers) HandleBookCover(ctx context.Context, c *app.RequestContext) {
 		writeErrorKey(c, consts.StatusBadRequest, "api.common.pathRequired")
 		return
 	}
-	data, contentType, err := h.app.ReadBookCover(path)
+	data, contentType, err := h.app.BookAssets().ReadCover(path)
 	if err != nil {
 		status := consts.StatusBadRequest
 		if os.IsNotExist(err) {
@@ -78,7 +88,7 @@ func (h *Handlers) HandleBookCover(ctx context.Context, c *app.RequestContext) {
 
 // HandleBookCoverGenerate POST /api/books/cover/generate — 为指定书籍生成并应用封面。
 func (h *Handlers) HandleBookCoverGenerate(ctx context.Context, c *app.RequestContext) {
-	var req novaApp.BookCoverGenerateRequest
+	var req bookapp.CoverGenerateRequest
 	if err := c.BindJSON(&req); err != nil {
 		writeErrorKey(c, consts.StatusBadRequest, "api.common.invalidRequest")
 		return
@@ -87,12 +97,120 @@ func (h *Handlers) HandleBookCoverGenerate(ctx context.Context, c *app.RequestCo
 		writeErrorKey(c, consts.StatusBadRequest, "api.common.pathRequired")
 		return
 	}
-	result, err := h.app.GenerateBookCover(ctx, req)
+	result, err := h.app.BookAssets().GenerateCover(ctx, req)
 	if err != nil {
 		writeError(c, consts.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(c, consts.StatusOK, result)
+}
+
+// HandleBookCoverUpload POST /api/books/cover/upload — 上传并应用指定书籍固定封面。
+func (h *Handlers) HandleBookCoverUpload(ctx context.Context, c *app.RequestContext) {
+	path := strings.TrimSpace(string(c.FormValue("path")))
+	if path == "" {
+		writeErrorKey(c, consts.StatusBadRequest, "api.books.pathRequired")
+		return
+	}
+	filename, data, ok := readBookCoverUpload(c)
+	if !ok {
+		return
+	}
+	result, err := h.app.BookAssets().UploadCover(path, filename, data)
+	if err != nil {
+		writeError(c, consts.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(c, consts.StatusOK, result)
+}
+
+// HandleBookExport GET /api/books/export?path=...&format=txt — 导出指定书籍。
+func (h *Handlers) HandleBookExport(ctx context.Context, c *app.RequestContext) {
+	path := strings.TrimSpace(string(c.Query("path")))
+	format := strings.TrimSpace(string(c.Query("format")))
+	if path == "" {
+		writeErrorKey(c, consts.StatusBadRequest, "api.books.pathQueryRequired")
+		return
+	}
+	if format == "" {
+		writeErrorKey(c, consts.StatusBadRequest, "api.books.exportFormatRequired")
+		return
+	}
+
+	result, err := h.app.BookAssets().Export(bookapp.BookExportRequest{
+		Path:   path,
+		Format: bookapp.BookExportFormat(format),
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, bookapp.ErrUnsupportedBookExportFormat):
+			writeErrorKey(c, consts.StatusBadRequest, "api.books.exportFormatUnsupported", "format", format)
+		case errors.Is(err, book.ErrNoExportableChapters):
+			writeErrorKey(c, consts.StatusBadRequest, "api.books.exportNoChapters")
+		default:
+			writeError(c, consts.StatusBadRequest, err.Error())
+		}
+		return
+	}
+	c.Response.Header.Set("Content-Disposition", attachmentContentDisposition(result.Filename))
+	c.Response.Header.Set("Cache-Control", "no-store")
+	c.Data(consts.StatusOK, result.ContentType, result.Data)
+}
+
+func attachmentContentDisposition(filename string) string {
+	fallback := asciiDownloadFilename(filename)
+	encoded := strings.ReplaceAll(url.PathEscape(filename), "+", "%20")
+	return `attachment; filename="` + fallback + `"; filename*=UTF-8''` + encoded
+}
+
+func asciiDownloadFilename(filename string) string {
+	filename = strings.TrimSpace(filename)
+	if filename == "" {
+		return "book.txt"
+	}
+	var b strings.Builder
+	for _, r := range filename {
+		switch {
+		case r == '\\' || r == '"':
+			b.WriteByte('_')
+		case r >= 0x20 && r <= 0x7e:
+			b.WriteRune(r)
+		}
+	}
+	if strings.TrimSpace(b.String()) == "" {
+		return "book.txt"
+	}
+	return b.String()
+}
+
+func readBookCoverUpload(c *app.RequestContext) (string, []byte, bool) {
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		writeErrorKey(c, consts.StatusBadRequest, "api.books.coverUploadRequired")
+		return "", nil, false
+	}
+	if fileHeader.Size > MaxBookCoverUploadBytes {
+		writeErrorKey(c, consts.StatusBadRequest, "api.books.coverTooLarge")
+		return "", nil, false
+	}
+
+	file, err := fileHeader.Open()
+	if err != nil {
+		writeErrorKey(c, consts.StatusBadRequest, "api.books.coverReadFailed", "detail", err.Error())
+		return "", nil, false
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(io.LimitReader(file, MaxBookCoverUploadBytes+1))
+	if err != nil {
+		writeErrorKey(c, consts.StatusBadRequest, "api.books.coverReadFailed", "detail", err.Error())
+		return "", nil, false
+	}
+	if int64(len(data)) > MaxBookCoverUploadBytes {
+		writeErrorKey(c, consts.StatusBadRequest, "api.books.coverTooLarge")
+		return "", nil, false
+	}
+	return fileHeader.Filename, data, true
 }
 
 // handleBookRemove POST /api/books/remove — 移除书籍记录，不删除磁盘目录。
@@ -124,7 +242,23 @@ func (h *Handlers) HandleBookReorder(ctx context.Context, c *app.RequestContext)
 		writeErrorKey(c, consts.StatusBadRequest, "api.common.invalidRequest")
 		return
 	}
-	if err := h.app.ReorderBooks(req.Paths); err != nil {
+	if err := h.app.BookAssets().Reorder(req.Paths); err != nil {
+		writeError(c, consts.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(c, consts.StatusOK, map[string]string{"message": messageKey(c, "api.books.reordered")})
+}
+
+// HandleBookSortMode POST /api/books/sort-mode — 切换书架与快捷入口共用的排序方式。
+func (h *Handlers) HandleBookSortMode(ctx context.Context, c *app.RequestContext) {
+	var req struct {
+		Mode projectdomain.SortMode `json:"mode"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		writeErrorKey(c, consts.StatusBadRequest, "api.common.invalidRequest")
+		return
+	}
+	if err := h.app.BookAssets().SetSortMode(req.Mode); err != nil {
 		writeError(c, consts.StatusBadRequest, err.Error())
 		return
 	}
@@ -138,7 +272,7 @@ func (h *Handlers) HandleBookInfo(ctx context.Context, c *app.RequestContext) {
 		writeErrorKey(c, consts.StatusBadRequest, "api.books.pathQueryRequired")
 		return
 	}
-	meta, err := h.app.BookInfo(path)
+	meta, err := h.app.BookAssets().Info(path)
 	if err != nil {
 		writeError(c, consts.StatusBadRequest, err.Error())
 		return
@@ -162,7 +296,7 @@ func (h *Handlers) HandleUpdateBookInfo(ctx context.Context, c *app.RequestConte
 		writeErrorKey(c, consts.StatusBadRequest, "api.books.pathRequired")
 		return
 	}
-	meta, err := h.app.UpdateBookInfo(req.Path, req.Title, req.Author, req.Description)
+	meta, err := h.app.BookAssets().UpdateInfo(req.Path, req.Title, req.Author, req.Description)
 	if err != nil {
 		writeError(c, consts.StatusInternalServerError, err.Error())
 		return

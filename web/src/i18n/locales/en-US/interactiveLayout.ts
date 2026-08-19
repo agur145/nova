@@ -1,5 +1,6 @@
 const interactiveLayout = {
-  'interactiveLayout.resizeSceneMemory': 'Resize Long-Term Memory',
+  'interactiveLayout.loading': 'Loading the game world…',
+  'interactiveLayout.resizeDirectorPanel': 'Resize Director Console',
 } as const
 
 export default interactiveLayout

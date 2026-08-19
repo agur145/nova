@@ -1,137 +1,166 @@
-import { useEffect, useRef, useState } from 'react'
-import { BookMarked, Building2, Database, FileText, Image as ImageIcon, Library, Loader2, MapPin, PanelLeft, Save, ScrollText, Search, SlidersHorizontal, Sparkles, Trash2, UserRound } from 'lucide-react'
-import type { LucideIcon } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { BookMarked, Bot, Database, Image as ImageIcon, Images, Search, SlidersHorizontal, Sparkles, Tags, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { abortLoreImagesGenerate, clearLoreItemImage, createLoreItem, deleteLoreItem, generateLoreItemImage, getLoreItems, readFile, saveFile, streamLoreImagesGenerate, updateLoreItem, workspaceAssetURL, type LoreImageProgressEvent, type LoreItem, type SSEEvent } from '@/lib/api'
+import { abortLoreImagesGenerate, APIError, clearLoreItemImage, createProjectLoreItem, deleteProjectLoreItem, generateLoreItemImage, getProjectLoreItems, projectFileAssetURL, readOptionalProjectFile, readProjectFile, streamLoreImagesGenerate, uploadLoreItemImage, type LoreImageProgressEvent, type LoreItem, type SSEEvent } from '@/lib/api'
+import { withErrorLogID } from '@/lib/api-client'
+import { rebaseJSONValue, rebaseText } from '@/lib/three-way-rebase'
+import { rebaseJSONWithRecovery, rebaseTextWithRecovery } from '@/lib/autosave/rebase-with-recovery'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { ConfigManagerChat } from '@/components/Chat/ConfigManagerChat'
+import { ConfirmDialog } from '@/components/common/ConfirmDialog'
+import { EmptyState } from '@/components/common/EmptyState'
+import { InlineErrorNotice } from '@/components/common/inline-error-notice'
+import { LoadingState } from '@/components/common/LoadingState'
+import { AutosaveStatusIndicator } from '@/components/forms/autosave-status'
 import { AdaptiveSurface } from '@/components/layout/adaptive-surface'
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
+import { FeaturePageShell } from '@/components/layout/feature-page-shell'
+import { MobilePaneTrigger } from '@/components/layout/mobile-pane-trigger'
+import { ResourceDirectory } from '@/components/resource-directory/ResourceDirectory'
+import type { ResourceDirectoryBadge, ResourceDirectoryItem, ResourceDirectorySection } from '@/components/resource-directory/types'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import { createImagePreset, createInteractiveTeller, deleteImagePreset, deleteInteractiveTeller, getImagePresets, getInteractiveTellers, updateImagePreset, updateInteractiveTeller } from '../api'
+import { getImagePresets } from '../api'
 import { INTERACTIVE_OPENING_PRESET_PATH, INTERACTIVE_OPENING_PRESET_UPDATED_EVENT, INTERACTIVE_OPENING_PRESET_ENTRY_ID, LEGACY_INTERACTIVE_OPENING_PRESET_PATH, parseBookOpeningPresets, serializeBookOpeningPresets, type BookOpeningPreset } from '../opening'
-import type { ImagePreset, Teller } from '../types'
-import { CreatorDirectory, CreatorEditor, ImagePresetEditor, LoreDirectory, LoreEditor, OpeningPresetEditor, TellerDirectory } from './SettingPanelSections'
-import { TellerEditor } from './SettingPanelTellerEditor'
+import type { PresetUsageMode } from '../preset-ownership'
+import type { ImagePreset, StoryDirector, Teller } from '../types'
+import { CreatorDirectory, CreatorEditor } from './setting-panel/CreatorEditor'
+import { LoreEditor } from './setting-panel/LoreEditor'
+import { OpeningPresetEditor } from './setting-panel/OpeningPresetEditor'
+import { loreImportanceLabel, loreLoadModeLabel, loreTypeLabel } from '@/features/lore/options'
+import { LoreClassificationDialog } from './LoreClassificationDialog'
+import { presetActionButtonClassName as actionButtonClassName, presetIconActionClassName as iconActionClassName } from './preset-config/editor-styles'
+import { PresetSettingsPanel } from './setting-panel/PresetSettingsPanel'
+import { loreAutosaveDraft, useLoreItemAutosave, type LoreAutosaveDraft } from '@/features/lore/use-lore-item-autosave'
+import { LORE_UPDATED_EVENT, notifyLoreUpdated, type LoreUpdatedDetail } from '@/features/lore/events'
+import { useProjectFileAutosave } from './setting-panel/use-project-file-autosave'
+import { EMPTY_IMAGE_PRESETS, EMPTY_STORY_DIRECTORS, EMPTY_TELLERS } from './setting-panel/presetResources'
+import { firstVisibleLoreItemId, KNOWLEDGE_SECTIONS, sectionItems, type KnowledgeSection, type LoreLoadModeFilter, type LoreType } from '@/features/lore/knowledge-sections'
+import { isProjectChangeForProject, type WorkspaceChangeEvent } from '@/features/changes/types'
+import type { DocumentReviewController, DocumentReviewNavigationIntent } from '@/features/document-review/controller'
+import type { DocumentReviewSnapshot } from '@/components/Editor/documentReviewAnchors'
+import type { ToolNavigationIntent } from '@/components/Chat/tool-navigation'
 
 const CREATOR_PATH = 'CREATOR.md'
 const CREATOR_ENTRY_ID = '__creator__'
 const LORE_CONFIG_AGENT_ENTRY_ID = '__config_manager_lore__'
-const TELLER_CONFIG_AGENT_ENTRY_ID = '__config_manager_teller__'
-const EMPTY_TELLERS: Teller[] = []
-const EMPTY_IMAGE_PRESETS: ImagePreset[] = []
-type PresetResourceKind = 'teller' | 'image'
+const UTF8_ENCODER = new TextEncoder()
 
 export type SettingPanelMode = 'lore' | 'creator' | 'teller'
 
-type LoreType = LoreItem['type']
-
-interface KnowledgeSection {
-  id: string
-  labelKey: string
-  icon: LucideIcon
-  types: LoreType[]
-  createType: LoreType
-  createName: string
-  tag?: string
-  excludeTag?: string
-}
-
-const KNOWLEDGE_SECTIONS: KnowledgeSection[] = [
-  {
-    id: 'characters',
-    labelKey: 'lore.type.character',
-    icon: UserRound,
-    types: ['character'],
-    createType: 'character',
-    createName: '新角色',
-  },
-  {
-    id: 'locations',
-    labelKey: 'lore.type.location',
-    icon: MapPin,
-    types: ['location'],
-    createType: 'location',
-    createName: '新地点',
-  },
-  {
-    id: 'factions',
-    labelKey: 'lore.type.faction',
-    icon: Building2,
-    types: ['faction'],
-    createType: 'faction',
-    createName: '新组织',
-  },
-  {
-    id: 'rules',
-    labelKey: 'lore.type.rule',
-    icon: ScrollText,
-    types: ['world', 'rule'],
-    createType: 'rule',
-    createName: '新规则',
-  },
-  {
-    id: 'templates',
-    labelKey: 'settingPanel.section.templates',
-    icon: FileText,
-    types: ['other'],
-    createType: 'other',
-    createName: '新模板',
-    tag: '模板',
-  },
-  {
-    id: 'assets',
-    labelKey: 'settingPanel.section.assets',
-    icon: Library,
-    types: ['item', 'other'],
-    createType: 'item',
-    createName: '新素材',
-    excludeTag: '模板',
-  },
-]
 const LORE_TYPE_FILTER_OPTIONS: LoreType[] = ['character', 'world', 'location', 'faction', 'rule', 'item', 'other']
+type LoreImageBusyAction = 'generate' | 'upload' | 'clear'
 
 interface SettingPanelProps {
   mode?: SettingPanelMode
-  workspace?: string
+  projectId: string
   tellers?: Teller[]
+  storyDirectors?: StoryDirector[]
   imagePresets?: ImagePreset[]
+  presetUsageMode?: PresetUsageMode
   onTellersChange?: (tellers: Teller[]) => void
+  onStoryDirectorsChange?: (directors: StoryDirector[]) => void
   onImagePresetsChange?: (presets: ImagePreset[]) => void
+  documentReview?: DocumentReviewController
+  documentReviewNavigationIntent?: DocumentReviewNavigationIntent | null
+  refreshSignal?: number
   embedded?: boolean
+  onClose?: () => void
+  onFlushHandlerChange?: (handler: (() => Promise<boolean>) | null) => void
+  toolNavigationIntent?: ToolNavigationIntent | null
 }
 
-export function SettingPanel({ mode, workspace = '', tellers: externalTellers = EMPTY_TELLERS, imagePresets: externalImagePresets = EMPTY_IMAGE_PRESETS, onTellersChange, onImagePresetsChange, embedded = false }: SettingPanelProps) {
-  const { t } = useTranslation()
+export function SettingPanel({
+  mode,
+  projectId,
+  tellers = EMPTY_TELLERS,
+  storyDirectors = EMPTY_STORY_DIRECTORS,
+  imagePresets = EMPTY_IMAGE_PRESETS,
+  presetUsageMode = 'game',
+  onTellersChange,
+  onStoryDirectorsChange,
+  onImagePresetsChange,
+  documentReview,
+  documentReviewNavigationIntent,
+  refreshSignal = 0,
+  embedded = false,
+  onClose,
+  onFlushHandlerChange,
+  toolNavigationIntent,
+}: SettingPanelProps) {
   const activeMode = mode || 'lore'
+  if (activeMode === 'teller') {
+    return (
+      <PresetSettingsPanel
+        projectId={projectId}
+        tellers={tellers}
+        storyDirectors={storyDirectors}
+        imagePresets={imagePresets}
+        presetUsageMode={presetUsageMode}
+        onTellersChange={onTellersChange}
+        onStoryDirectorsChange={onStoryDirectorsChange}
+        onImagePresetsChange={onImagePresetsChange}
+        embedded={embedded}
+        onClose={onClose}
+        toolNavigationIntent={toolNavigationIntent}
+      />
+    )
+  }
+  return <LoreSettingPanel mode={activeMode} projectId={projectId} imagePresets={imagePresets} onImagePresetsChange={onImagePresetsChange} documentReview={documentReview} documentReviewNavigationIntent={documentReviewNavigationIntent} refreshSignal={refreshSignal} embedded={embedded} onClose={onClose} onFlushHandlerChange={onFlushHandlerChange} toolNavigationIntent={toolNavigationIntent} />
+}
+
+function LoreSettingPanel({
+  mode,
+  projectId,
+  imagePresets: externalImagePresets,
+  onImagePresetsChange,
+  documentReview,
+  documentReviewNavigationIntent,
+  refreshSignal,
+  embedded,
+  onClose,
+  onFlushHandlerChange,
+  toolNavigationIntent,
+}: {
+  mode: Exclude<SettingPanelMode, 'teller'>
+  projectId: string
+  imagePresets: ImagePreset[]
+  onImagePresetsChange?: (presets: ImagePreset[]) => void
+  documentReview?: DocumentReviewController
+  documentReviewNavigationIntent?: DocumentReviewNavigationIntent | null
+  refreshSignal: number
+  embedded: boolean
+  onClose?: () => void
+  onFlushHandlerChange?: (handler: (() => Promise<boolean>) | null) => void
+  toolNavigationIntent?: ToolNavigationIntent | null
+}) {
+  const { t } = useTranslation()
+  const activeMode = mode
   const [items, setItems] = useState<LoreItem[]>([])
+  const [loading, setLoading] = useState(Boolean(projectId))
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [activeId, setActiveId] = useState('')
   const [draft, setDraft] = useState<LoreItem | null>(null)
   const [tagDraft, setTagDraft] = useState('')
   const [query, setQuery] = useState('')
+  const [loadModeFilter, setLoadModeFilter] = useState<LoreLoadModeFilter>('all')
   const [creatorContent, setCreatorContent] = useState('')
   const [creatorRevision, setCreatorRevision] = useState('')
+  const [creatorProjectId, setCreatorProjectId] = useState('')
   const [openingPresets, setOpeningPresets] = useState<BookOpeningPreset[]>([])
   const [openingPresetRevision, setOpeningPresetRevision] = useState('')
+  const [openingPresetProjectId, setOpeningPresetProjectId] = useState('')
   const [activeOpeningPresetId, setActiveOpeningPresetId] = useState('')
-  const [tellers, setTellers] = useState<Teller[]>(externalTellers)
-  const [activeTellerId, setActiveTellerId] = useState('')
-  const [tellerDraft, setTellerDraft] = useState<Teller | null>(null)
-  const [tellerTagDraft, setTellerTagDraft] = useState('')
-  const [presetResourceKind, setPresetResourceKind] = useState<PresetResourceKind>('teller')
   const [imagePresets, setImagePresets] = useState<ImagePreset[]>(externalImagePresets)
   const [activeImagePresetId, setActiveImagePresetId] = useState('')
-  const [imagePresetDraft, setImagePresetDraft] = useState<ImagePreset | null>(null)
-  const [imagePresetTagDraft, setImagePresetTagDraft] = useState('')
-  const [activeSlotId, setActiveSlotId] = useState('')
   const [loreImageInstruction, setLoreImageInstruction] = useState('')
-  const [loreImageGeneratingId, setLoreImageGeneratingId] = useState('')
+  const [loreImageBusy, setLoreImageBusy] = useState<{ itemId: string; action: LoreImageBusyAction } | null>(null)
   const [loreImageBatchOpen, setLoreImageBatchOpen] = useState(false)
+  const [loreClassificationOpen, setLoreClassificationOpen] = useState(false)
   const [loreImageBatchSelectedIds, setLoreImageBatchSelectedIds] = useState<string[]>([])
   const [loreImageBatchQuery, setLoreImageBatchQuery] = useState('')
   const [loreImageBatchType, setLoreImageBatchType] = useState<LoreType | 'all'>('all')
@@ -144,59 +173,295 @@ export function SettingPanel({ mode, workspace = '', tellers: externalTellers = 
   const [saving, setSaving] = useState(false)
   const loreDraftRef = useRef<LoreItem | null>(null)
   const loreTagDraftRef = useRef('')
-  const loreAutoSaveTimer = useRef<number | null>(null)
-  const loreSavedSignature = useRef('')
-  const loreBaseRevisionRef = useRef('')
-  const tellerAutoSaveTimer = useRef<number | null>(null)
-  const tellerSavedSignature = useRef('')
-  const tellerBaseRevisionRef = useRef('')
-  const imagePresetAutoSaveTimer = useRef<number | null>(null)
-  const imagePresetSavedSignature = useRef('')
-  const imagePresetBaseRevisionRef = useRef('')
+  const loreBaselineDraftRef = useRef<LoreAutosaveDraft | null>(null)
+  const creatorContentRef = useRef('')
+  const creatorBaselineContentRef = useRef('')
+  const creatorBaselineRevisionRef = useRef('')
+  const openingPresetsRef = useRef<BookOpeningPreset[]>([])
+  const openingPresetBaselineContentRef = useRef('')
+  const openingPresetBaselineRevisionRef = useRef('')
+  const loreRebaseSequenceRef = useRef(0)
   const loreImageBatchAbortRef = useRef<AbortController | null>(null)
+  const refreshSignalRef = useRef(refreshSignal)
+  const isCreatorActive = activeMode === 'creator' || (activeMode === 'lore' && activeId === CREATOR_ENTRY_ID)
+  const documentReviewLoreID = useMemo(() => {
+    if (!documentReview || !documentReviewNavigationIntent) return ''
+    const target = documentReview.comments.find((comment) => comment.id === documentReviewNavigationIntent.commentID)?.target
+    return target?.kind === 'lore_item' ? target.id : ''
+  }, [documentReview, documentReviewNavigationIntent])
+  creatorContentRef.current = creatorContent
+  openingPresetsRef.current = openingPresets
 
-  useEffect(() => {
-    let cancelled = false
-    setItems([])
-    setActiveId(LORE_CONFIG_AGENT_ENTRY_ID)
-    setDraft(null)
-    setTagDraft('')
-    setQuery('')
-    if (!workspace)
-      return () => {
-        cancelled = true
-      }
-    getLoreItems()
-      .then((data) => {
-        if (cancelled) return
-        setItems(data)
-        setActiveId(LORE_CONFIG_AGENT_ENTRY_ID)
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setItems([])
-          setActiveId(LORE_CONFIG_AGENT_ENTRY_ID)
-        }
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [workspace])
-
-  useEffect(() => {
-    const item = items.find((entry) => entry.id === activeId) || null
-    const nextDraft = item ? { ...item, tags: [...(item.tags || [])] } : null
-    const nextTagDraft = (item?.tags || []).join('，')
-    const currentDraft = loreDraftRef.current
-    const currentTagDraft = loreTagDraftRef.current
-    const hasUnsavedCurrentDraft = Boolean(currentDraft?.id && currentDraft.id === item?.id && loreDraftSignature(currentDraft, currentTagDraft) !== loreSavedSignature.current)
-    if (!hasUnsavedCurrentDraft) {
+  const selectedLoreBaseline = useMemo<LoreAutosaveDraft | null>(() => {
+    const item = items.find((entry) => entry.id === activeId)
+    return item ? loreAutosaveDraft(item) : null
+  }, [activeId, items])
+  const residentLoreBytes = useMemo(() => {
+    const persistedBytes = items
+      .filter((item) => item.id !== draft?.id && item.enabled !== false && item.load_mode === 'resident')
+      .reduce((total, item) => total + UTF8_ENCODER.encode((item.content || '').trim()).length, 0)
+    if (draft?.enabled === false || draft?.load_mode !== 'resident') return persistedBytes
+    return persistedBytes + UTF8_ENCODER.encode((draft.content || '').trim()).length
+  }, [draft, items])
+  const loreAutosave = useLoreItemAutosave({
+    draft,
+    tagDraft,
+    baseline: selectedLoreBaseline,
+    active: activeMode === 'lore'
+      && Boolean(draft)
+      && activeId !== CREATOR_ENTRY_ID
+      && activeId !== INTERACTIVE_OPENING_PRESET_ENTRY_ID
+      && activeId !== LORE_CONFIG_AGENT_ENTRY_ID,
+    projectId,
+    onSaved: (item, submitted) => {
+      setItems((current) => current.map((entry) => entry.id === item.id ? item : entry))
+      const currentDraft = loreDraftRef.current
+      const savedBaseline = loreAutosaveDraft(item)
+      const currentAutosaveDraft = currentDraft?.id === item.id
+        ? { ...currentDraft, tags: [...(currentDraft.tags || [])], tag_draft: loreTagDraftRef.current }
+        : submitted
+      const rebased = rebaseJSONValue(submitted, currentAutosaveDraft, savedBaseline)
+      const { tag_draft: nextTagDraft, ...nextDraft } = rebased
       setDraft(nextDraft)
       setTagDraft(nextTagDraft)
-      loreBaseRevisionRef.current = nextDraft?.updated_at || ''
-      loreSavedSignature.current = nextDraft ? loreDraftSignature(nextDraft, nextTagDraft) : ''
+      loreBaselineDraftRef.current = savedBaseline
+    },
+    onAutoSaveError: (error) => {
+      console.warn('[lore-editor] failed to autosave lore item', error)
+      toast.error(error instanceof Error ? error.message : t('editor.saveFailed'))
+    },
+  })
+
+  const creatorAutosave = useProjectFileAutosave({
+    projectId,
+    path: CREATOR_PATH,
+    content: creatorContent,
+    revision: creatorRevision,
+    fileProjectId: creatorProjectId,
+    active: isCreatorActive,
+    onSaved: (saved, submitted) => {
+      if (saved.project_id !== projectId) return
+      creatorBaselineContentRef.current = saved.content
+      creatorBaselineRevisionRef.current = saved.updated_at || ''
+      setCreatorContent((current) => current === submitted.content ? saved.content : current)
+      setCreatorRevision(saved.updated_at || '')
+    },
+    onAutoSaveError: (error) => {
+      console.error('[creator-editor] failed to autosave CREATOR.md', error)
+      toast.error((error as Error).message || t('editor.saveFailed'))
+    },
+  })
+
+  const openingPresetAutosave = useProjectFileAutosave({
+    projectId,
+    path: INTERACTIVE_OPENING_PRESET_PATH,
+    content: serializeBookOpeningPresets(openingPresets),
+    revision: openingPresetRevision,
+    fileProjectId: openingPresetProjectId,
+    active: activeMode === 'lore' && activeId === INTERACTIVE_OPENING_PRESET_ENTRY_ID,
+    onSaved: (saved, submitted) => {
+      if (saved.project_id !== projectId) return
+      openingPresetBaselineContentRef.current = saved.content
+      openingPresetBaselineRevisionRef.current = saved.updated_at || ''
+      setOpeningPresets((current) => (
+        serializeBookOpeningPresets(current) === submitted.content
+          ? parseBookOpeningPresets(saved.content)
+          : current
+      ))
+      setOpeningPresetRevision(saved.updated_at || '')
+      notifyOpeningPresetUpdated()
+    },
+    onAutoSaveError: (error) => {
+      console.error('[opening-preset-editor] failed to autosave opening presets', error)
+      toast.error((error as Error).message || t('editor.saveFailed'))
+    },
+  })
+
+  const reconcileCreatorFile = useCallback(async (file: Awaited<ReturnType<typeof readProjectFile>>) => {
+    if (file.project_id !== projectId) return
+    const fileContent = file.content || ''
+    const previousBaseline = creatorBaselineContentRef.current
+    const previousRevision = creatorBaselineRevisionRef.current
+    const capturedDraft = creatorContentRef.current
+    let rebasedContent = await rebaseTextWithRecovery({
+      resource: 'project_file',
+      scope: file.project_id,
+      id: CREATOR_PATH,
+      baseline: { revision: previousRevision, value: previousBaseline },
+      local: { revision: previousRevision, value: capturedDraft },
+      external: { revision: file.revision, value: fileContent },
+    })
+    if (creatorContentRef.current !== capturedDraft) {
+      rebasedContent = rebaseText(capturedDraft, creatorContentRef.current, rebasedContent)
     }
-  }, [activeId, items])
+    creatorAutosave.resetBaseline({
+      id: CREATOR_PATH,
+      content: fileContent,
+      project_id: file.project_id,
+      updated_at: file.revision || '',
+    })
+    creatorBaselineContentRef.current = fileContent
+    creatorBaselineRevisionRef.current = file.revision || ''
+    setCreatorContent(rebasedContent)
+    setCreatorRevision(file.revision || '')
+    setCreatorProjectId(file.project_id)
+  }, [creatorAutosave.resetBaseline, projectId])
+
+  const reconcileOpeningPresetFile = useCallback(async (file: Awaited<ReturnType<typeof readProjectFile>>) => {
+    if (file.project_id !== projectId) return
+    const nextPresets = parseBookOpeningPresets(file.content || '')
+    const nextContent = serializeBookOpeningPresets(nextPresets)
+    const currentContent = serializeBookOpeningPresets(openingPresetsRef.current)
+    const previousRevision = openingPresetBaselineRevisionRef.current
+    let rebasedContent = await rebaseTextWithRecovery({
+      resource: 'project_file',
+      scope: file.project_id,
+      id: INTERACTIVE_OPENING_PRESET_PATH,
+      baseline: { revision: previousRevision, value: openingPresetBaselineContentRef.current },
+      local: { revision: previousRevision, value: currentContent },
+      external: { revision: file.revision, value: nextContent },
+    })
+    const latestCurrentContent = serializeBookOpeningPresets(openingPresetsRef.current)
+    if (latestCurrentContent !== currentContent) {
+      rebasedContent = rebaseText(currentContent, latestCurrentContent, rebasedContent)
+    }
+    const rebasedPresets = parseBookOpeningPresets(rebasedContent)
+    openingPresetAutosave.resetBaseline({
+      id: INTERACTIVE_OPENING_PRESET_PATH,
+      content: nextContent,
+      project_id: file.project_id,
+      updated_at: file.revision || '',
+    })
+    openingPresetBaselineContentRef.current = nextContent
+    openingPresetBaselineRevisionRef.current = file.revision || ''
+    setOpeningPresets(rebasedPresets)
+    setOpeningPresetRevision(file.revision || '')
+    setOpeningPresetProjectId(file.project_id)
+    setActiveOpeningPresetId((current) => (
+      current && rebasedPresets.some((preset) => preset.id === current)
+        ? current
+        : rebasedPresets[0]?.id || ''
+    ))
+  }, [openingPresetAutosave.resetBaseline, projectId])
+
+  const loadLoreItems = useCallback(async () => {
+    if (!projectId) {
+      setItems([])
+      setActiveId('')
+      setLoadError(null)
+      setLoading(false)
+      return
+    }
+    setLoading(true)
+    setLoadError(null)
+    try {
+      const data = await getProjectLoreItems(projectId)
+      setItems(data)
+      // Select the first visible lore item; an empty catalog is handled by the empty state.
+      setActiveId(firstVisibleLoreItemId(data) ?? '')
+    } catch (error) {
+      setItems([])
+      setActiveId('')
+      setLoadError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setLoading(false)
+    }
+  }, [projectId])
+
+  useEffect(() => {
+    setItems([])
+    setActiveId('')
+    setDraft(null)
+    setTagDraft('')
+    loreBaselineDraftRef.current = null
+    setQuery('')
+    void loadLoreItems()
+  }, [loadLoreItems])
+
+  useEffect(() => {
+    const sequence = loreRebaseSequenceRef.current + 1
+    loreRebaseSequenceRef.current = sequence
+    const item = items.find((entry) => entry.id === activeId) || null
+    const nextBaseline = item ? loreAutosaveDraft(item) : null
+    const currentDraft = loreDraftRef.current
+    const previousBaseline = loreBaselineDraftRef.current
+    const currentAutosaveDraft = currentDraft && item && currentDraft.id === item.id
+      ? { ...currentDraft, tags: [...(currentDraft.tags || [])], tag_draft: loreTagDraftRef.current }
+      : null
+    void (async () => {
+      if (
+        currentDraft
+        && previousBaseline?.id === currentDraft.id
+        && !items.some((entry) => entry.id === currentDraft.id)
+      ) {
+        await rebaseJSONWithRecovery<LoreAutosaveDraft | null>({
+          resource: 'lore_item',
+          scope: projectId,
+          id: currentDraft.id,
+          baseline: { revision: previousBaseline.updated_at, value: previousBaseline },
+          local: {
+            revision: previousBaseline.updated_at,
+            value: { ...currentDraft, tags: [...(currentDraft.tags || [])], tag_draft: loreTagDraftRef.current },
+          },
+          external: { revision: 'deleted', value: null },
+        })
+      }
+      let rebasedFromDraft = currentDraft
+      let rebasedFromTagDraft = loreTagDraftRef.current
+      let rebasedFromAutosaveDraft = currentAutosaveDraft
+      let rebased = nextBaseline
+        ? previousBaseline?.id === nextBaseline.id && currentAutosaveDraft
+          ? await rebaseJSONWithRecovery({
+              resource: 'lore_item',
+              scope: projectId,
+              id: nextBaseline.id,
+              baseline: { revision: previousBaseline.updated_at, value: previousBaseline },
+              local: { revision: previousBaseline.updated_at, value: currentAutosaveDraft },
+              external: { revision: nextBaseline.updated_at, value: nextBaseline },
+            })
+          : nextBaseline
+        : null
+      while (
+        sequence === loreRebaseSequenceRef.current
+        && rebased
+        && rebasedFromAutosaveDraft?.id === rebased.id
+      ) {
+        const latestDraft = loreDraftRef.current
+        const latestTagDraft = loreTagDraftRef.current
+        if (!latestDraft || latestDraft.id !== rebased.id) break
+        if (Object.is(latestDraft, rebasedFromDraft) && latestTagDraft === rebasedFromTagDraft) break
+        const latestAutosaveDraft = {
+          ...latestDraft,
+          tags: [...(latestDraft.tags || [])],
+          tag_draft: latestTagDraft,
+        }
+        rebased = await rebaseJSONWithRecovery({
+          resource: 'lore_item',
+          scope: projectId,
+          id: rebased.id,
+          baseline: { revision: rebasedFromAutosaveDraft.updated_at, value: rebasedFromAutosaveDraft },
+          local: { revision: rebasedFromAutosaveDraft.updated_at, value: latestAutosaveDraft },
+          external: { revision: nextBaseline?.updated_at, value: rebased },
+        })
+        rebasedFromDraft = latestDraft
+        rebasedFromTagDraft = latestTagDraft
+        rebasedFromAutosaveDraft = latestAutosaveDraft
+      }
+      if (sequence !== loreRebaseSequenceRef.current) return
+      if (rebased) {
+        const { tag_draft: nextTagDraft, ...nextDraft } = rebased
+        setDraft(nextDraft)
+        setTagDraft(nextTagDraft)
+      } else {
+        setDraft(null)
+        setTagDraft('')
+      }
+      loreBaselineDraftRef.current = nextBaseline
+    })().catch((error) => console.error('[lore-editor] failed to reconcile external lore update', error))
+    return () => {
+      if (loreRebaseSequenceRef.current === sequence) loreRebaseSequenceRef.current += 1
+    }
+  }, [activeId, items, projectId])
 
   useEffect(() => {
     loreDraftRef.current = draft
@@ -204,95 +469,138 @@ export function SettingPanel({ mode, workspace = '', tellers: externalTellers = 
   }, [draft, tagDraft])
 
   useEffect(() => {
-    if (activeMode !== 'creator' && !(activeMode === 'lore' && activeId === CREATOR_ENTRY_ID)) return
+    if (!isCreatorActive) return
     let cancelled = false
+    creatorContentRef.current = ''
+    creatorBaselineContentRef.current = ''
+    creatorBaselineRevisionRef.current = ''
     setCreatorContent('')
     setCreatorRevision('')
-    if (!workspace)
+    setCreatorProjectId('')
+    if (!projectId)
       return () => {
         cancelled = true
       }
-    readFile(CREATOR_PATH)
-      .then((data) => {
-        if (!cancelled) {
-          setCreatorContent(data.content)
-          setCreatorRevision(data.revision || '')
-        }
+    readProjectFile(projectId, CREATOR_PATH)
+      .then(async (data) => {
+        if (!cancelled) await reconcileCreatorFile(data)
       })
-      .catch(() => {
+      .catch((error) => {
         if (!cancelled) {
+          const missing = error instanceof APIError && error.status === 404
+          if (missing) {
+            creatorAutosave.resetBaseline({
+              id: CREATOR_PATH,
+              content: '',
+              project_id: projectId,
+              updated_at: 'missing',
+            })
+            creatorBaselineContentRef.current = ''
+            creatorBaselineRevisionRef.current = 'missing'
+          }
           setCreatorContent('')
-          setCreatorRevision('')
+          setCreatorRevision(missing ? 'missing' : '')
+          setCreatorProjectId(missing ? projectId : '')
         }
       })
     return () => {
       cancelled = true
     }
-  }, [activeId, activeMode, workspace])
+  }, [creatorAutosave.resetBaseline, isCreatorActive, projectId, reconcileCreatorFile])
 
   useEffect(() => {
     if (activeMode !== 'lore' || activeId !== INTERACTIVE_OPENING_PRESET_ENTRY_ID) return
     let cancelled = false
+    const emptyContent = serializeBookOpeningPresets([])
+    openingPresetsRef.current = []
+    openingPresetBaselineContentRef.current = emptyContent
+    openingPresetBaselineRevisionRef.current = ''
     setOpeningPresets([])
     setOpeningPresetRevision('')
+    setOpeningPresetProjectId('')
     setActiveOpeningPresetId('')
-    if (!workspace)
+    if (!projectId)
       return () => {
         cancelled = true
       }
-    readFile(INTERACTIVE_OPENING_PRESET_PATH)
-      .then((data) => {
+    void (async () => {
+      try {
+        const data = await readOptionalProjectFile(projectId, INTERACTIVE_OPENING_PRESET_PATH)
         if (cancelled) return
-        const presets = parseBookOpeningPresets(data.content)
-        setOpeningPresets(presets)
-        setOpeningPresetRevision(data.revision || '')
-        setActiveOpeningPresetId((current) => (current && presets.some((preset) => preset.id === current) ? current : presets[0]?.id || ''))
-      })
-      .catch(async () => {
-        try {
-          const legacy = await readFile(LEGACY_INTERACTIVE_OPENING_PRESET_PATH)
-          if (cancelled) return
-          const presets = parseBookOpeningPresets(legacy.content)
-          setOpeningPresets(presets)
-          setOpeningPresetRevision('')
-          setActiveOpeningPresetId((current) => (current && presets.some((preset) => preset.id === current) ? current : presets[0]?.id || ''))
-        } catch {
-          if (!cancelled) {
-            setOpeningPresets([])
-            setOpeningPresetRevision('')
-            setActiveOpeningPresetId('')
-          }
+        if (data) {
+          await reconcileOpeningPresetFile(data)
+          return
         }
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [activeId, activeMode, workspace])
-
-  useEffect(() => {
-    setTellers(externalTellers)
-    setActiveTellerId((current) => current || externalTellers[0]?.id || '')
-  }, [externalTellers])
-
-  useEffect(() => {
-    if (activeMode !== 'teller' || onTellersChange || externalTellers.length > 0 || !workspace) return
-    let cancelled = false
-    getInteractiveTellers()
-      .then((data) => {
+        const legacy = await readOptionalProjectFile(projectId, LEGACY_INTERACTIVE_OPENING_PRESET_PATH)
         if (cancelled) return
-        setTellers(data)
-        setActiveTellerId((current) => current || data[0]?.id || '')
-      })
-      .catch(() => {
-        if (!cancelled) setTellers([])
-      })
+        if (legacy) {
+          const presets = parseBookOpeningPresets(legacy.content || '')
+          const content = serializeBookOpeningPresets(presets)
+          openingPresetAutosave.resetBaseline({
+            id: INTERACTIVE_OPENING_PRESET_PATH,
+            content,
+            project_id: legacy.project_id,
+            updated_at: 'missing',
+          })
+          openingPresetBaselineContentRef.current = content
+          openingPresetBaselineRevisionRef.current = 'missing'
+          setOpeningPresets(presets)
+          setOpeningPresetRevision('missing')
+          setOpeningPresetProjectId(legacy.project_id)
+          setActiveOpeningPresetId((current) => (current && presets.some((preset) => preset.id === current) ? current : presets[0]?.id || ''))
+          return
+        }
+        openingPresetAutosave.resetBaseline({
+          id: INTERACTIVE_OPENING_PRESET_PATH,
+          content: emptyContent,
+          project_id: projectId,
+          updated_at: 'missing',
+        })
+        openingPresetBaselineContentRef.current = emptyContent
+        openingPresetBaselineRevisionRef.current = 'missing'
+        setOpeningPresets([])
+        setOpeningPresetRevision('missing')
+        setOpeningPresetProjectId(projectId)
+        setActiveOpeningPresetId('')
+      } catch {
+        if (cancelled) return
+        setOpeningPresets([])
+        setOpeningPresetRevision('')
+        setOpeningPresetProjectId('')
+        setActiveOpeningPresetId('')
+      }
+    })()
     return () => {
       cancelled = true
     }
-  }, [activeMode, externalTellers.length, onTellersChange, workspace])
+  }, [activeId, activeMode, openingPresetAutosave.resetBaseline, projectId, reconcileOpeningPresetFile])
 
   useEffect(() => {
-    if ((activeMode !== 'teller' && activeMode !== 'lore') || onImagePresetsChange || externalImagePresets.length > 0 || !workspace) return
+    const onWorkspaceChange = (event: Event) => {
+      const detail = (event as CustomEvent<WorkspaceChangeEvent>).detail
+      if (!isProjectChangeForProject(detail, projectId)) return
+      const paths = detail?.paths
+      if (isCreatorActive && (!paths || paths.includes(CREATOR_PATH))) {
+        void readProjectFile(projectId, CREATOR_PATH)
+          .then(reconcileCreatorFile)
+          .catch((error) => console.warn('[creator-editor] failed to reload external CREATOR.md update', error))
+      }
+      if (
+        activeMode === 'lore'
+        && activeId === INTERACTIVE_OPENING_PRESET_ENTRY_ID
+        && (!paths || paths.includes(INTERACTIVE_OPENING_PRESET_PATH))
+      ) {
+        void readProjectFile(projectId, INTERACTIVE_OPENING_PRESET_PATH)
+          .then(reconcileOpeningPresetFile)
+          .catch((error) => console.warn('[opening-preset-editor] failed to reload external opening preset update', error))
+      }
+    }
+    window.addEventListener('nova:workspace-change', onWorkspaceChange)
+    return () => window.removeEventListener('nova:workspace-change', onWorkspaceChange)
+  }, [activeId, activeMode, isCreatorActive, projectId, reconcileCreatorFile, reconcileOpeningPresetFile])
+
+  useEffect(() => {
+    if (activeMode !== 'lore' || onImagePresetsChange || externalImagePresets.length > 0) return
     let cancelled = false
     getImagePresets()
       .then((data) => {
@@ -306,19 +614,7 @@ export function SettingPanel({ mode, workspace = '', tellers: externalTellers = 
     return () => {
       cancelled = true
     }
-  }, [activeMode, externalImagePresets.length, onImagePresetsChange, workspace])
-
-  useEffect(() => {
-    setTellers(externalTellers)
-    setActiveTellerId((current) => {
-      if (current === TELLER_CONFIG_AGENT_ENTRY_ID) return current
-      if (current && externalTellers.some((teller) => teller.id === current)) return current
-      return externalTellers[0]?.id || ''
-    })
-    setTellerDraft(null)
-    setTellerTagDraft('')
-    setActiveSlotId('')
-  }, [externalTellers, workspace])
+  }, [activeMode, externalImagePresets.length, onImagePresetsChange])
 
   useEffect(() => {
     setImagePresets(externalImagePresets)
@@ -326,227 +622,68 @@ export function SettingPanel({ mode, workspace = '', tellers: externalTellers = 
       if (current && externalImagePresets.some((preset) => preset.id === current)) return current
       return externalImagePresets[0]?.id || ''
     })
-    setImagePresetDraft(null)
-    setImagePresetTagDraft('')
-  }, [externalImagePresets, workspace])
+  }, [externalImagePresets])
 
-  useEffect(() => {
-    if (activeTellerId === TELLER_CONFIG_AGENT_ENTRY_ID) {
-      setTellerDraft(null)
-      setTellerTagDraft('')
-      tellerBaseRevisionRef.current = ''
-      setActiveSlotId('')
-      return
-    }
-    const teller = tellers.find((entry) => entry.id === activeTellerId) || null
-    const nextDraft = teller
-      ? {
-          ...teller,
-          tags: [...(teller.tags || [])],
-          slots: [...(teller.slots || [])],
-          context_policy: { ...teller.context_policy },
-          style_rules: [...(teller.style_rules || [])],
-        }
-      : null
-    setTellerDraft(nextDraft)
-    setTellerTagDraft((teller?.tags || []).join('，'))
-    tellerBaseRevisionRef.current = nextDraft?.updated_at || ''
-    setActiveSlotId((current) => {
-      if (current && teller?.slots?.some((slot) => slot.id === current)) return current
-      return teller?.slots?.[0]?.id || ''
-    })
-    tellerSavedSignature.current = nextDraft ? tellerDraftSignature(nextDraft, (teller?.tags || []).join('，')) : ''
-  }, [activeTellerId, tellers])
-
-  useEffect(() => {
-    const preset = imagePresets.find((entry) => entry.id === activeImagePresetId) || null
-    const nextDraft = preset ? { ...preset, tags: [...(preset.tags || [])] } : null
-    setImagePresetDraft(nextDraft)
-    setImagePresetTagDraft((preset?.tags || []).join('，'))
-    imagePresetBaseRevisionRef.current = nextDraft?.updated_at || ''
-    imagePresetSavedSignature.current = nextDraft ? imagePresetDraftSignature(nextDraft, (preset?.tags || []).join('，')) : ''
-  }, [activeImagePresetId, imagePresets])
-
-  const refreshItems = async (nextActiveId?: string) => {
-    const data = await getLoreItems()
+  const refreshItems = useCallback(async (nextActiveId?: string) => {
+    const data = await getProjectLoreItems(projectId)
     setItems(data)
-    setActiveId(nextActiveId || LORE_CONFIG_AGENT_ENTRY_ID)
-  }
+    // Preserve an existing selection, including virtual entries, then fall back to the first visible item.
+    setActiveId((current) => {
+      if (nextActiveId && data.some((item) => item.id === nextActiveId)) return nextActiveId
+      if (current === CREATOR_ENTRY_ID || current === INTERACTIVE_OPENING_PRESET_ENTRY_ID || current === LORE_CONFIG_AGENT_ENTRY_ID) return current
+      if (current && data.some((item) => item.id === current)) return current
+      return firstVisibleLoreItemId(data) ?? ''
+    })
+  }, [projectId])
 
   useEffect(() => {
     const onLoreUpdated = (event: Event) => {
-      const detail = (event as CustomEvent<{ item_ids?: string[] }>).detail
-      void refreshItems(detail?.item_ids?.[0])
+      const detail = (event as CustomEvent<LoreUpdatedDetail>).detail
+      if (detail?.projectId !== projectId) return
+      void refreshItems(detail.ids?.[0])
     }
-    window.addEventListener('nova:lore-updated', onLoreUpdated)
-    return () => window.removeEventListener('nova:lore-updated', onLoreUpdated)
-  }, [])
+    window.addEventListener(LORE_UPDATED_EVENT, onLoreUpdated)
+    return () => window.removeEventListener(LORE_UPDATED_EVENT, onLoreUpdated)
+  }, [projectId, refreshItems])
 
-  const refreshTellers = async (nextActiveId?: string) => {
-    const data = await getInteractiveTellers()
-    setTellers(data)
-    onTellersChange?.(data)
-    setActiveTellerId((current) => {
-      if (nextActiveId) return nextActiveId
-      if (current === TELLER_CONFIG_AGENT_ENTRY_ID) return current
-      if (current && data.some((teller) => teller.id === current)) return current
-      return data[0]?.id || ''
-    })
-  }
-
-  const refreshImagePresets = async (nextActiveId?: string) => {
-    const data = await getImagePresets()
-    setImagePresets(data)
-    onImagePresetsChange?.(data)
-    setActiveImagePresetId((current) => {
-      if (nextActiveId) return nextActiveId
-      if (current && data.some((preset) => preset.id === current)) return current
-      return data[0]?.id || ''
-    })
-  }
-
-  const mergeSavedTeller = (teller: Teller) => {
-    setTellers((current) => current.map((entry) => (entry.id === teller.id ? teller : entry)))
-    onTellersChange?.(tellers.map((entry) => (entry.id === teller.id ? teller : entry)))
-    setActiveTellerId(teller.id)
-  }
-
-  const mergeSavedImagePreset = (preset: ImagePreset) => {
-    setImagePresets((current) => {
-      const next = current.map((entry) => (entry.id === preset.id ? preset : entry))
-      onImagePresetsChange?.(next)
-      return next
-    })
-    setActiveImagePresetId(preset.id)
-  }
+  useEffect(() => {
+    if (refreshSignalRef.current === refreshSignal) return
+    refreshSignalRef.current = refreshSignal
+    void refreshItems()
+  }, [refreshItems, refreshSignal])
 
   const mergeSavedLoreItem = (item: LoreItem) => {
     setItems((current) => current.map((entry) => (entry.id === item.id ? item : entry)))
     if (loreDraftRef.current?.id === item.id) {
-      const nextDraft = { ...item, tags: [...(item.tags || [])] }
-      const nextTagDraft = (item.tags || []).join('，')
+      const { tag_draft: nextTagDraft, ...nextDraft } = loreAutosaveDraft(item)
       setDraft(nextDraft)
       setTagDraft(nextTagDraft)
-      loreBaseRevisionRef.current = item.updated_at || ''
-      loreSavedSignature.current = loreDraftSignature(nextDraft, nextTagDraft)
-    }
-  }
-
-  const saveLoreDraft = async (mode: 'manual' | 'auto') => {
-    if (!draft) return null
-    const payload = { ...draft, tags: splitTags(tagDraft) }
-    const signature = loreDraftSignature(payload, tagDraft)
-    if (mode === 'auto' && signature === loreSavedSignature.current) return null
-    const item = await updateLoreItem(draft.id, payload, loreBaseRevisionRef.current)
-    loreBaseRevisionRef.current = item.updated_at || ''
-    loreSavedSignature.current = loreDraftSignature(item, (item.tags || []).join('，'))
-    mergeSavedLoreItem(item)
-    return item
-  }
-
-  const saveTellerDraft = async (mode: 'manual' | 'auto') => {
-    if (!tellerDraft) return
-    const payload = {
-      ...tellerDraft,
-      tags: splitTags(tellerTagDraft),
-    }
-    const signature = tellerDraftSignature(payload, tellerTagDraft)
-    if (mode === 'auto' && signature === tellerSavedSignature.current) return
-    const teller = await updateInteractiveTeller(tellerDraft.id, payload, tellerBaseRevisionRef.current)
-    tellerBaseRevisionRef.current = teller.updated_at || ''
-    tellerSavedSignature.current = tellerDraftSignature(teller, (teller.tags || []).join('，'))
-    if (mode === 'manual') {
-      mergeSavedTeller(teller)
-    }
-  }
-
-  const saveImagePresetDraft = async (mode: 'manual' | 'auto') => {
-    if (!imagePresetDraft) return
-    const payload = {
-      ...imagePresetDraft,
-      tags: splitTags(imagePresetTagDraft),
-    }
-    const signature = imagePresetDraftSignature(payload, imagePresetTagDraft)
-    if (mode === 'auto' && signature === imagePresetSavedSignature.current) return
-    const preset = await updateImagePreset(imagePresetDraft.id, payload, imagePresetBaseRevisionRef.current)
-    imagePresetBaseRevisionRef.current = preset.updated_at || ''
-    imagePresetSavedSignature.current = imagePresetDraftSignature(preset, (preset.tags || []).join('，'))
-    if (mode === 'manual') {
-      mergeSavedImagePreset(preset)
+      loreBaselineDraftRef.current = { ...nextDraft, tag_draft: nextTagDraft }
     }
   }
 
   const handleCreateLore = async (section: KnowledgeSection = KNOWLEDGE_SECTIONS[0]) => {
     setSaving(true)
     try {
-      const item = await createLoreItem({
+      const createName = t(section.createNameKey)
+      const item = await createProjectLoreItem(projectId, {
         enabled: true,
         type: section.createType,
-        name: section.createName,
+        name: createName,
         importance: section.createType === 'character' ? 'major' : 'important',
         load_mode: section.createType === 'character' ? 'resident' : 'auto',
         tags: section.tag ? [section.tag] : [],
-        brief_description: `${loreTypeLabel(section.createType, t)} ${section.createName}。用 3-5 句概括本项的身份、别名、关键事实、适用场景和触发词。上下文出现相关内容时，一定要参考本项详情。`,
-        content: `## ${section.createName}\n\n`,
+        brief_description: `${loreTypeLabel(section.createType, t)} ${createName}。用 3-5 句概括本项的身份、别名、关键事实、适用场景和触发词。`,
+        content: `## ${createName}\n\n`,
       })
       await refreshItems(item.id)
-      notifyLoreUpdated([item.id])
+      notifyLoreUpdated({ projectId, ids: [item.id] })
     } finally {
       setSaving(false)
     }
   }
 
-  const handleCreateTeller = async () => {
-    setSaving(true)
-    try {
-      const teller = await createInteractiveTeller(newTellerDraft())
-      await refreshTellers(teller.id)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const handleCreateImagePreset = async () => {
-    setSaving(true)
-    try {
-      const preset = await createImagePreset(newImagePresetDraft())
-      setPresetResourceKind('image')
-      await refreshImagePresets(preset.id)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const handleDelete = async () => {
-    if (activeMode === 'teller') {
-      if (activeTellerId === TELLER_CONFIG_AGENT_ENTRY_ID) return
-      if (presetResourceKind === 'image') {
-        if (!imagePresetDraft?.custom) return
-        if (!window.confirm(t('settingPanel.confirmDeleteImagePreset', { name: imagePresetDraft.name }))) return
-        setSaving(true)
-        try {
-          if (imagePresetAutoSaveTimer.current) {
-            window.clearTimeout(imagePresetAutoSaveTimer.current)
-            imagePresetAutoSaveTimer.current = null
-          }
-          await deleteImagePreset(imagePresetDraft.id)
-          await refreshImagePresets()
-        } finally {
-          setSaving(false)
-        }
-        return
-      }
-      if (!tellerDraft || !tellerDraft.custom) return
-      if (!window.confirm(t('settingPanel.confirmDeleteTeller', { name: tellerDraft.name }))) return
-      setSaving(true)
-      try {
-        await deleteInteractiveTeller(tellerDraft.id)
-        await refreshTellers()
-      } finally {
-        setSaving(false)
-      }
-      return
-    }
+  const handleDelete = () => {
     if (!draft) return
     setDeleteLoreTarget(draft)
   }
@@ -555,214 +692,161 @@ export function SettingPanel({ mode, workspace = '', tellers: externalTellers = 
     if (!deleteLoreTarget) return
     setSaving(true)
     try {
-      if (loreAutoSaveTimer.current) {
-        window.clearTimeout(loreAutoSaveTimer.current)
-        loreAutoSaveTimer.current = null
-      }
-      await deleteLoreItem(deleteLoreTarget.id)
+      await flushLoreAutosave()
+      loreAutosave.cancelPending()
+      await deleteProjectLoreItem(projectId, deleteLoreTarget.id)
       await refreshItems()
-      notifyLoreUpdated([deleteLoreTarget.id])
+      notifyLoreUpdated({ projectId, ids: [deleteLoreTarget.id] })
       setDeleteLoreTarget(null)
     } finally {
       setSaving(false)
     }
   }
 
-  const handleSave = async () => {
-    setSaving(true)
+  const flushLoreAutosave = useCallback(async (force = false) => {
+    const pending = loreAutosave.flushPending()
+    if (pending) return pending
+    if (force || loreAutosave.status === 'error') return loreAutosave.saveNow(force ? 'manual' : 'auto')
+    return null
+  }, [loreAutosave.flushPending, loreAutosave.saveNow, loreAutosave.status])
+
+  const flushActiveAutosave = useCallback(async () => {
     try {
       if (activeMode === 'creator' || (activeMode === 'lore' && activeId === CREATOR_ENTRY_ID)) {
-        const result = await saveFile(CREATOR_PATH, creatorContent, creatorRevision)
-        setCreatorRevision(result.revision || '')
-        return
+        await (creatorAutosave.flushPending() ?? creatorAutosave.saveNow('manual'))
+        return true
       }
       if (activeMode === 'lore' && activeId === INTERACTIVE_OPENING_PRESET_ENTRY_ID) {
-        const result = await saveFile(INTERACTIVE_OPENING_PRESET_PATH, serializeBookOpeningPresets(openingPresets), openingPresetRevision)
-        setOpeningPresetRevision(result.revision || '')
-        notifyOpeningPresetUpdated()
-        return
+        await (openingPresetAutosave.flushPending() ?? openingPresetAutosave.saveNow('manual'))
+        return true
       }
-      if (activeMode === 'teller') {
-        if (presetResourceKind === 'image') {
-          if (imagePresetAutoSaveTimer.current) {
-            window.clearTimeout(imagePresetAutoSaveTimer.current)
-            imagePresetAutoSaveTimer.current = null
-          }
-          await saveImagePresetDraft('manual')
-        } else {
-          if (tellerAutoSaveTimer.current) {
-            window.clearTimeout(tellerAutoSaveTimer.current)
-            tellerAutoSaveTimer.current = null
-          }
-          await saveTellerDraft('manual')
-        }
-        return
-      }
-      if (loreAutoSaveTimer.current) {
-        window.clearTimeout(loreAutoSaveTimer.current)
-        loreAutoSaveTimer.current = null
-      }
-      const item = await saveLoreDraft('manual')
+      const item = await flushLoreAutosave()
       if (item) {
-        notifyLoreUpdated([item.id])
+        notifyLoreUpdated({ projectId, ids: [item.id] })
       }
+      return true
     } catch (err) {
       toast.error((err as Error).message || t('editor.saveFailed'))
-    } finally {
-      setSaving(false)
+      return false
     }
-  }
+  }, [
+    activeId,
+    activeMode,
+    creatorAutosave.flushPending,
+    creatorAutosave.saveNow,
+    flushLoreAutosave,
+    openingPresetAutosave.flushPending,
+    openingPresetAutosave.saveNow,
+    projectId,
+    t,
+  ])
+
+  const prepareLoreReviewSnapshot = useCallback(async (): Promise<DocumentReviewSnapshot> => {
+    const itemID = loreDraftRef.current?.id
+    if (!itemID || !(await flushActiveAutosave())) {
+      throw new Error('The lore draft could not be saved')
+    }
+    const canonical = (await getProjectLoreItems(projectId)).find((item) => item.id === itemID)
+    if (!canonical?.updated_at) {
+      throw new Error('The canonical lore snapshot is unavailable')
+    }
+    setItems((current) => current.map((item) => item.id === canonical.id ? canonical : item))
+    return { content: canonical.content || '', revision: canonical.updated_at }
+  }, [flushActiveAutosave, projectId])
 
   useEffect(() => {
-    if (activeMode !== 'lore' || !draft || activeId === LORE_CONFIG_AGENT_ENTRY_ID) return
-    const signature = loreDraftSignature(draft, tagDraft)
-    if (signature === loreSavedSignature.current) return
-    if (loreAutoSaveTimer.current) {
-      window.clearTimeout(loreAutoSaveTimer.current)
-    }
-    loreAutoSaveTimer.current = window.setTimeout(() => {
-      loreAutoSaveTimer.current = null
-      void saveLoreDraft('auto').catch((err) => {
-        console.warn('[lore-editor] 自动保存资料库条目失败', err)
-        toast.error((err as Error).message || t('editor.saveFailed'))
-      })
-    }, 1200)
-    return () => {
-      if (loreAutoSaveTimer.current) {
-        window.clearTimeout(loreAutoSaveTimer.current)
-        loreAutoSaveTimer.current = null
+    onFlushHandlerChange?.(flushActiveAutosave)
+    return () => onFlushHandlerChange?.(null)
+  }, [flushActiveAutosave, onFlushHandlerChange])
+
+  const closePanel = async () => {
+    if (!onClose || !(await flushActiveAutosave())) return
+    onClose()
+  }
+
+  const handleSelectLore = useCallback(async (id: string) => {
+    if (id === activeId) return
+    try {
+      if (activeId === CREATOR_ENTRY_ID) {
+        await (creatorAutosave.flushPending() ?? creatorAutosave.saveNow('auto'))
+      } else if (activeId === INTERACTIVE_OPENING_PRESET_ENTRY_ID) {
+        await (openingPresetAutosave.flushPending() ?? openingPresetAutosave.saveNow('auto'))
+      } else {
+        await flushLoreAutosave()
       }
+      setActiveId(id)
+    } catch (error) {
+      console.error('[lore-editor] failed to flush autosave before switching resources', error)
+      toast.error((error as Error).message || t('editor.saveFailed'))
     }
-  }, [activeMode, activeId, draft, tagDraft, t])
+  }, [activeId, creatorAutosave.flushPending, creatorAutosave.saveNow, flushLoreAutosave, openingPresetAutosave.flushPending, openingPresetAutosave.saveNow, t])
 
   useEffect(() => {
-    if (activeMode !== 'teller' || !tellerDraft || activeTellerId === TELLER_CONFIG_AGENT_ENTRY_ID) return
-    const signature = tellerDraftSignature(tellerDraft, tellerTagDraft)
-    if (signature === tellerSavedSignature.current) return
-    if (tellerAutoSaveTimer.current) {
-      window.clearTimeout(tellerAutoSaveTimer.current)
-    }
-    tellerAutoSaveTimer.current = window.setTimeout(() => {
-      tellerAutoSaveTimer.current = null
-      void saveTellerDraft('auto').catch((err) => {
-        console.warn('[teller-editor] 自动保存叙事方案失败', err)
-        toast.error((err as Error).message || t('editor.saveFailed'))
-      })
-    }, 1200)
-    return () => {
-      if (tellerAutoSaveTimer.current) {
-        window.clearTimeout(tellerAutoSaveTimer.current)
-        tellerAutoSaveTimer.current = null
-      }
-    }
-  }, [activeMode, activeTellerId, tellerDraft, tellerTagDraft, t])
+    if (!documentReviewLoreID || documentReviewLoreID === activeId || !items.some((item) => item.id === documentReviewLoreID)) return
+    void handleSelectLore(documentReviewLoreID)
+  }, [activeId, documentReviewLoreID, handleSelectLore, items])
 
   useEffect(() => {
-    if (activeMode !== 'teller' || presetResourceKind !== 'image' || !imagePresetDraft) return
-    const signature = imagePresetDraftSignature(imagePresetDraft, imagePresetTagDraft)
-    if (signature === imagePresetSavedSignature.current) return
-    if (imagePresetAutoSaveTimer.current) {
-      window.clearTimeout(imagePresetAutoSaveTimer.current)
-    }
-    imagePresetAutoSaveTimer.current = window.setTimeout(() => {
-      imagePresetAutoSaveTimer.current = null
-      void saveImagePresetDraft('auto').catch((err) => {
-        console.warn('[image-preset-editor] 自动保存图像方案失败', err)
-        toast.error((err as Error).message || t('editor.saveFailed'))
-      })
-    }, 1200)
-    return () => {
-      if (imagePresetAutoSaveTimer.current) {
-        window.clearTimeout(imagePresetAutoSaveTimer.current)
-        imagePresetAutoSaveTimer.current = null
-      }
-    }
-  }, [activeMode, activeImagePresetId, imagePresetDraft, imagePresetTagDraft, presetResourceKind, t])
-
-  const flushImagePresetAutoSave = () => {
-    if (!imagePresetAutoSaveTimer.current) return
-    window.clearTimeout(imagePresetAutoSaveTimer.current)
-    imagePresetAutoSaveTimer.current = null
-    void saveImagePresetDraft('auto').catch((err) => {
-      console.warn('[image-preset-editor] 切换条目前自动保存图像方案失败', err)
-    })
-  }
-
-  const handlePresetResourceKindChange = (kind: PresetResourceKind) => {
-    if (kind !== presetResourceKind && presetResourceKind === 'image') flushImagePresetAutoSave()
-    setPresetResourceKind(kind)
-    if (kind === 'image' && !activeImagePresetId && imagePresets[0]) setActiveImagePresetId(imagePresets[0].id)
-    if (kind === 'teller' && !activeTellerId && tellers[0]) setActiveTellerId(tellers[0].id)
-  }
-
-  const handleSelectTeller = (id: string) => {
-    if (presetResourceKind === 'image') flushImagePresetAutoSave()
-    if (id !== TELLER_CONFIG_AGENT_ENTRY_ID) setPresetResourceKind('teller')
-    setActiveTellerId(id)
-  }
-
-  const handleSelectImagePreset = (id: string) => {
-    flushImagePresetAutoSave()
-    setPresetResourceKind('image')
-    setActiveTellerId((current) => current === TELLER_CONFIG_AGENT_ENTRY_ID ? '' : current)
-    setActiveImagePresetId(id)
-  }
-
-  const handleSelectLore = (id: string) => {
-    if (loreAutoSaveTimer.current) {
-      window.clearTimeout(loreAutoSaveTimer.current)
-      loreAutoSaveTimer.current = null
-      void saveLoreDraft('auto').catch((err) => {
-        console.warn('[lore-editor] 切换条目前自动保存资料库条目失败', err)
-      })
-    }
-    setActiveId(id)
-  }
+    const target = toolNavigationIntent?.target
+    if (!target || target.kind !== 'lore_item') return
+    const targetID = target.id || items.find((item) => item.name === target.name)?.id || ''
+    if (!targetID || targetID === activeId || !items.some((item) => item.id === targetID)) return
+    void handleSelectLore(targetID)
+  }, [activeId, handleSelectLore, items, toolNavigationIntent?.nonce])
 
   const selectedLoreImagePresetId = () => activeImagePresetId || imagePresets.find((preset) => !preset.invalid)?.id || 'game-cg'
 
   const handleGenerateLoreImage = async () => {
-    if (!draft || loreImageGeneratingId) return
-    setLoreImageGeneratingId(draft.id)
+    if (!draft || loreImageBusy) return
+    setLoreImageBusy({ itemId: draft.id, action: 'generate' })
     try {
-      if (loreAutoSaveTimer.current) {
-        window.clearTimeout(loreAutoSaveTimer.current)
-        loreAutoSaveTimer.current = null
-      }
-      const saved = await saveLoreDraft('manual')
+      const saved = await flushLoreAutosave()
       const target = saved || loreDraftRef.current || draft
-      const item = await generateLoreItemImage(target.id, {
+      const item = await generateLoreItemImage(projectId, target.id, {
         instruction: loreImageInstruction,
         image_preset_id: selectedLoreImagePresetId(),
       })
       mergeSavedLoreItem(item)
-      notifyLoreUpdated([item.id])
+      notifyLoreUpdated({ projectId, ids: [item.id] })
       toast.success(t('settingPanel.loreImage.generated'))
     } catch (err) {
       toast.error((err as Error).message || t('settingPanel.loreImage.failed'))
     } finally {
-      setLoreImageGeneratingId('')
+      setLoreImageBusy(null)
+    }
+  }
+
+  const handleUploadLoreImage = async (file: File) => {
+    if (!draft || loreImageBusy) return
+    setLoreImageBusy({ itemId: draft.id, action: 'upload' })
+    try {
+      const saved = await flushLoreAutosave()
+      const target = saved || loreDraftRef.current || draft
+      const item = await uploadLoreItemImage(projectId, target.id, file)
+      mergeSavedLoreItem(item)
+      notifyLoreUpdated({ projectId, ids: [item.id] })
+      toast.success(t('settingPanel.loreImage.uploaded'))
+    } catch (err) {
+      toast.error((err as Error).message || t('settingPanel.loreImage.uploadFailed'))
+    } finally {
+      setLoreImageBusy(null)
     }
   }
 
   const handleClearLoreImage = async () => {
-    if (!draft || loreImageGeneratingId) return
-    setLoreImageGeneratingId(draft.id)
+    if (!draft || loreImageBusy) return
+    setLoreImageBusy({ itemId: draft.id, action: 'clear' })
     try {
-      if (loreAutoSaveTimer.current) {
-        window.clearTimeout(loreAutoSaveTimer.current)
-        loreAutoSaveTimer.current = null
-      }
-      const saved = await saveLoreDraft('manual')
+      const saved = await flushLoreAutosave()
       const target = saved || loreDraftRef.current || draft
-      const item = await clearLoreItemImage(target.id)
+      const item = await clearLoreItemImage(projectId, target.id)
       mergeSavedLoreItem(item)
-      notifyLoreUpdated([item.id])
+      notifyLoreUpdated({ projectId, ids: [item.id] })
       toast.success(t('settingPanel.loreImage.cleared'))
     } catch (err) {
       toast.error((err as Error).message || t('settingPanel.loreImage.failed'))
     } finally {
-      setLoreImageGeneratingId('')
+      setLoreImageBusy(null)
     }
   }
 
@@ -783,7 +867,7 @@ export function SettingPanel({ mode, workspace = '', tellers: externalTellers = 
     setLoreImageBatchRunning(true)
     setLoreImageBatchProgress({})
     try {
-      const stream = await streamLoreImagesGenerate({
+      const stream = await streamLoreImagesGenerate(projectId, {
         item_ids: loreImageBatchSelectedIds,
         instruction: loreImageBatchInstruction,
         overwrite_existing: loreImageBatchOverwrite,
@@ -828,14 +912,14 @@ export function SettingPanel({ mode, workspace = '', tellers: externalTellers = 
       return
     }
     if (event.event === 'error') {
-      const result = parseSSEData<{ message?: string }>(event)
-      toast.error(result?.message || t('settingPanel.loreImage.failed'))
+      const result = parseSSEData<{ message?: string; request_id?: string }>(event)
+      toast.error(withErrorLogID(result?.message || t('settingPanel.loreImage.failed'), result))
     }
   }
 
   const handleAbortLoreImageBatch = () => {
-    void abortLoreImagesGenerate().catch((err) => {
-      console.warn('[lore-image] 中止批量生成请求失败', err)
+    void abortLoreImagesGenerate(projectId).catch((err) => {
+      console.warn('[lore-image] failed to abort batch generation request', err)
     })
     loreImageBatchAbortRef.current?.abort()
     loreImageBatchAbortRef.current = null
@@ -849,24 +933,115 @@ export function SettingPanel({ mode, workspace = '', tellers: externalTellers = 
     }
   }, [])
 
-  const isCreatorActive = activeMode === 'creator' || (activeMode === 'lore' && activeId === CREATOR_ENTRY_ID)
   const isOpeningPresetActive = activeMode === 'lore' && activeId === INTERACTIVE_OPENING_PRESET_ENTRY_ID
   const isLoreConfigAgentActive = activeMode === 'lore' && activeId === LORE_CONFIG_AGENT_ENTRY_ID
-  const isTellerConfigAgentActive = activeMode === 'teller' && activeTellerId === TELLER_CONFIG_AGENT_ENTRY_ID
-  const isImagePresetEditorActive = activeMode === 'teller' && presetResourceKind === 'image'
+  const activeAutosaveStatus = isCreatorActive
+    ? creatorAutosave.status
+    : isOpeningPresetActive
+      ? openingPresetAutosave.status
+      : loreAutosave.status
+  const activeAutosaveError = isCreatorActive
+    ? creatorAutosave.error
+    : isOpeningPresetActive
+      ? openingPresetAutosave.error
+      : loreAutosave.error
+  const editorHeaderIcon = isCreatorActive ? BookMarked : isOpeningPresetActive ? Sparkles : isLoreConfigAgentActive ? Bot : Database
+  const editorHeaderTitle = isLoreConfigAgentActive
+    ? t('settingPanel.loreAgent.title')
+    : isCreatorActive
+      ? CREATOR_PATH
+      : isOpeningPresetActive
+        ? t('settingPanel.openingPreset.title')
+        : editorTitle(activeMode, draft, t)
+  const editorHeaderSubtitle = isLoreConfigAgentActive
+    ? t('settingPanel.loreAgent.subtitle')
+    : isCreatorActive
+      ? t('settingPanel.editor.creatorSubtitle')
+      : isOpeningPresetActive
+        ? t('settingPanel.openingPreset.subtitle')
+        : editorSubtitle(draft, t)
+  const loadModeFilterLabel = loadModeFilter === 'resident'
+    ? t('settingPanel.lore.loadModeFilter.resident')
+    : loadModeFilter === 'on_demand'
+      ? t('settingPanel.lore.loadModeFilter.onDemand')
+      : t('settingPanel.lore.loadModeFilter.all')
+  const loadModeFilterAriaLabel = `${t('settingPanel.lore.loadModeFilter')}: ${loadModeFilterLabel}`
+  const loreDirectorySections: ResourceDirectorySection[] = KNOWLEDGE_SECTIONS.map((section) => ({
+    id: section.id,
+    label: t(section.labelKey),
+    icon: section.icon,
+    items: sectionItems(items, section, query, loadModeFilter).map((item) => loreItemToDirectoryItem(item, projectId, t)),
+    onCreate: () => void handleCreateLore(section),
+    createLabel: `${t('chat.new')}${t(section.labelKey)}`,
+  }))
+  const loreLoadModeFilterControl = (
+    <Select value={loadModeFilter} onValueChange={(value) => setLoadModeFilter(value as LoreLoadModeFilter)}>
+      <SelectTrigger
+        size="sm"
+        className={cn(
+          'size-7 justify-center border-0 p-0 shadow-none [&>svg:last-child]:hidden',
+          loadModeFilter !== 'all' && 'bg-muted text-foreground',
+        )}
+        aria-label={loadModeFilterAriaLabel}
+      >
+        <SlidersHorizontal />
+        <span className="sr-only">{loadModeFilterLabel}</span>
+      </SelectTrigger>
+      <SelectContent position="popper" align="end">
+        <SelectGroup>
+          <SelectItem value="all">{t('settingPanel.lore.loadModeFilter.all')}</SelectItem>
+          <SelectItem value="resident">{t('settingPanel.lore.loadModeFilter.resident')}</SelectItem>
+          <SelectItem value="on_demand">{t('settingPanel.lore.loadModeFilter.onDemand')}</SelectItem>
+        </SelectGroup>
+      </SelectContent>
+    </Select>
+  )
+  const loreDirectoryActions = (
+    <>
+      <Button className={iconActionClassName} variant="outline" size="icon" disabled={saving || items.length === 0} onClick={handleOpenLoreImageBatch} aria-label={t('settingPanel.loreImage.batchOpen')}>
+        <Images data-icon="inline-start" />
+      </Button>
+      <Button className={iconActionClassName} variant="outline" size="icon" disabled={saving || items.length === 0} onClick={() => setLoreClassificationOpen(true)} aria-label={t('settingPanel.loreClassification.open')}>
+        <Tags data-icon="inline-start" />
+      </Button>
+    </>
+  )
   const directoryPanel = (
     <div className="nova-sidebar flex h-full min-h-0 flex-col bg-[var(--nova-surface-2)]">
-      <div className="border-b border-[var(--nova-border)] px-3 py-3">
-        <div className="flex items-center gap-2">
-          <ModeIcon mode={activeMode} />
-          <div className="text-sm font-semibold text-[var(--nova-text)]">{panelTitle(activeMode, t)}</div>
-        </div>
-        <div className="mt-1 text-[11px] text-[var(--nova-text-faint)]">{t('settingPanel.directoryHint')}</div>
-      </div>
-
-      {activeMode === 'lore' ? <LoreDirectory items={items} activeId={activeId} query={query} saving={saving} onQueryChange={setQuery} onSelect={handleSelectLore} onCreate={(section) => void handleCreateLore(section)} onBatchGenerate={handleOpenLoreImageBatch} /> : activeMode === 'creator' ? <CreatorDirectory /> : <TellerDirectory resourceKind={presetResourceKind} tellers={tellers} imagePresets={imagePresets} activeTellerId={activeTellerId} activeImagePresetId={activeImagePresetId} saving={saving} onResourceKindChange={handlePresetResourceKindChange} onSelectTeller={handleSelectTeller} onSelectImagePreset={handleSelectImagePreset} onCreateTeller={() => void handleCreateTeller()} onCreateImagePreset={() => void handleCreateImagePreset()} />}
+      {activeMode === 'lore' ? (
+        loading ? (
+          <LoadingState label={t('common.loading')} variant="panel" className="h-full min-h-0" />
+        ) : loadError ? (
+          <div className="flex flex-col gap-2 p-3">
+            <InlineErrorNotice message={loadError} />
+            <Button variant="outline" size="sm" onClick={() => void loadLoreItems()}>
+              {t('common.retry')}
+            </Button>
+          </div>
+        ) : (
+          <ResourceDirectory
+            sections={loreDirectorySections}
+            activeId={activeId || null}
+            onSelect={handleSelectLore}
+            saving={saving}
+            pinnedEntries={[
+              { id: LORE_CONFIG_AGENT_ENTRY_ID, label: t('settingPanel.loreAgent.title'), icon: Bot },
+              { id: CREATOR_ENTRY_ID, label: CREATOR_PATH, icon: BookMarked },
+              { id: INTERACTIVE_OPENING_PRESET_ENTRY_ID, label: t('settingPanel.openingPreset.title'), icon: Sparkles },
+            ]}
+            searchPlaceholder={t('settingPanel.searchLore')}
+            query={query}
+            onQueryChange={setQuery}
+            filterItem={() => true}
+            searchAccessory={loreLoadModeFilterControl}
+            headerActions={loreDirectoryActions}
+            emptySectionsLast
+          />
+        )
+      ) : <CreatorDirectory />}
     </div>
   )
+
   return (
     <section className="h-full min-h-0 bg-[var(--nova-surface-2)] text-[var(--nova-text)]">
       <AdaptiveSurface
@@ -876,99 +1051,126 @@ export function SettingPanel({ mode, workspace = '', tellers: externalTellers = 
           side: 'left',
           icon: <ModeIcon mode={activeMode} />,
           content: directoryPanel,
-          desktopClassName: `min-h-0 border-r border-[var(--nova-border)] ${embedded ? 'w-56' : 'w-[320px]'}`,
+          desktopClassName: 'min-h-0 border-r border-[var(--nova-border)]',
           mobileClassName: embedded ? 'w-[min(86vw,320px)]' : 'w-[min(90vw,360px)]',
         }}
         className="h-full"
         mainClassName="min-h-0 min-w-0"
-        desktopGridClassName={embedded ? 'grid-cols-[14rem_minmax(0,1fr)]' : 'grid-cols-[320px_minmax(0,1fr)]'}
+        leftResize={{
+          layoutKey: embedded ? 'nova-embedded-setting-directory-layout' : 'nova-setting-directory-layout',
+          label: t('layout.resize.sidebar'),
+          defaultSize: embedded ? '224px' : '320px',
+          minSize: embedded ? '180px' : '220px',
+          maxSize: '42%',
+        }}
       >
         {({ isMobile, openLeft }) => (
-      <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-[var(--nova-surface-2)]">
-        <div className="nova-topbar flex min-h-12 shrink-0 items-center justify-between gap-3 border-b px-4">
-          <div className="flex min-w-0 items-center gap-2">
-            {isMobile && (
-              <button type="button" className="nova-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--nova-radius)] text-[var(--nova-text-muted)] hover:text-[var(--nova-text)]" aria-label={t('workbench.mobile.openSidePanel', { label: panelTitle(activeMode, t) })} onClick={openLeft}>
-                <PanelLeft className="h-4 w-4" />
-              </button>
-            )}
-          <div className="min-w-0">
-            <div className="flex min-w-0 items-center gap-2">
-              {isCreatorActive ? <BookMarked className="h-3.5 w-3.5 shrink-0 text-[var(--nova-text-muted)]" /> : isOpeningPresetActive || isImagePresetEditorActive ? <Sparkles className="h-3.5 w-3.5 shrink-0 text-[var(--nova-text-muted)]" /> : <ModeIcon mode={activeMode} />}
-              <h2 className="truncate text-sm font-semibold text-[var(--nova-text)]">{isLoreConfigAgentActive ? t('settingPanel.loreAgent.title') : isTellerConfigAgentActive ? t('settingPanel.tellerAgent.title') : isCreatorActive ? CREATOR_PATH : isOpeningPresetActive ? t('settingPanel.openingPreset.title') : editorTitle(activeMode, draft, tellerDraft, imagePresetDraft, presetResourceKind, t)}</h2>
-            </div>
-            <p className="mt-0.5 truncate text-[11px] text-[var(--nova-text-faint)]">{isLoreConfigAgentActive ? t('settingPanel.loreAgent.subtitle') : isTellerConfigAgentActive ? t('settingPanel.tellerAgent.subtitle') : isCreatorActive ? t('settingPanel.editor.creatorSubtitle') : isOpeningPresetActive ? t('settingPanel.openingPreset.subtitle') : editorSubtitle(activeMode, draft, tellerDraft, imagePresetDraft, presetResourceKind, t)}</p>
-          </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {activeMode === 'lore' && !isLoreConfigAgentActive && !isCreatorActive && !isOpeningPresetActive && (
-              <Button className={iconActionClassName} variant="outline" size="icon" disabled={saving || !draft} onClick={handleDelete} aria-label={t('settingPanel.deleteLore')}>
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            )}
-            {activeMode === 'teller' && presetResourceKind === 'teller' && !isTellerConfigAgentActive && (
-              <Button className={iconActionClassName} variant="outline" size="icon" disabled={saving || !tellerDraft?.custom} onClick={handleDelete} aria-label={t('settingPanel.deleteTeller')}>
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            )}
-            {activeMode === 'teller' && presetResourceKind === 'image' && !isTellerConfigAgentActive && (
-              <Button className={iconActionClassName} variant="outline" size="icon" disabled={saving || !imagePresetDraft?.custom} onClick={handleDelete} aria-label={t('settingPanel.deleteImagePreset')}>
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            )}
-            {!isLoreConfigAgentActive && !isTellerConfigAgentActive && (
-              <Button className={actionButtonClassName} variant="outline" size="sm" disabled={saving || (activeMode === 'lore' && !isCreatorActive && !isOpeningPresetActive && !draft) || (activeMode === 'teller' && presetResourceKind === 'teller' && !tellerDraft) || (activeMode === 'teller' && presetResourceKind === 'image' && !imagePresetDraft)} onClick={handleSave}>
-                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                {t('common.save')}
-              </Button>
-            )}
-          </div>
-        </div>
-
-        {activeMode === 'lore' ? (
-          <>
-            {activeId === LORE_CONFIG_AGENT_ENTRY_ID ? (
-              <ConfigManagerChat
-                workspace={workspace}
-                origin="lore"
-                resourceId={LORE_CONFIG_AGENT_ENTRY_ID}
-                context={{ item_count: String(items.length) }}
-                onMutated={() => {
-                  void refreshItems()
-                  notifyLoreUpdated()
-                }}
-              />
-            ) : activeId === CREATOR_ENTRY_ID ? (
-              <CreatorEditor content={creatorContent} setContent={setCreatorContent} onSave={handleSave} />
-            ) : activeId === INTERACTIVE_OPENING_PRESET_ENTRY_ID ? (
-              <OpeningPresetEditor presets={openingPresets} activeId={activeOpeningPresetId} setActiveId={setActiveOpeningPresetId} setPresets={setOpeningPresets} onSave={handleSave} />
-            ) : (
-              <LoreEditor draft={draft} tagDraft={tagDraft} residentTotalChars={items.filter((item) => item.enabled !== false && item.load_mode === 'resident' && item.id !== draft?.id).reduce((total, item) => total + (item.content || '').length, draft?.enabled !== false && draft?.load_mode === 'resident' ? (draft.content || '').length : 0)} imagePresets={imagePresets} imagePresetId={activeImagePresetId || imagePresets.find((preset) => !preset.invalid)?.id || 'game-cg'} imageInstruction={loreImageInstruction} imageGenerating={loreImageGeneratingId === draft?.id} setDraft={setDraft} setTagDraft={setTagDraft} onImagePresetChange={setActiveImagePresetId} setImageInstruction={setLoreImageInstruction} onGenerateImage={() => void handleGenerateLoreImage()} onClearImage={() => void handleClearLoreImage()} onSave={handleSave} />
-            )}
-          </>
-        ) : activeMode === 'creator' ? (
-          <CreatorEditor content={creatorContent} setContent={setCreatorContent} onSave={handleSave} />
-        ) : isTellerConfigAgentActive ? (
-          <ConfigManagerChat
-            workspace={workspace}
-            origin="teller"
-            resourceId={TELLER_CONFIG_AGENT_ENTRY_ID}
-            context={{ teller_count: String(tellers.length), image_preset_count: String(imagePresets.length) }}
-            onMutated={() => {
-              void refreshTellers()
-              void refreshImagePresets()
-            }}
-          />
-        ) : activeMode === 'teller' && presetResourceKind === 'image' ? (
-          <ImagePresetEditor draft={imagePresetDraft} setDraft={setImagePresetDraft} tagDraft={imagePresetTagDraft} setTagDraft={setImagePresetTagDraft} onSave={handleSave} />
-        ) : (
-          <TellerEditor workspace={workspace} draft={tellerDraft} setDraft={setTellerDraft} tagDraft={tellerTagDraft} setTagDraft={setTellerTagDraft} activeSlotId={activeSlotId} setActiveSlotId={setActiveSlotId} onSave={handleSave} />
-        )}
-      </main>
+          <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-[var(--nova-surface-2)]">
+            <FeaturePageShell
+              icon={editorHeaderIcon}
+              title={editorHeaderTitle}
+              subtitle={editorHeaderSubtitle}
+              leadingContent={isMobile ? (
+                <MobilePaneTrigger
+                  side="left"
+                  label={t('workbench.mobile.openSidePanel', { label: panelTitle(activeMode, t) })}
+                  onClick={openLeft}
+                />
+              ) : undefined}
+              onSaveShortcut={isLoreConfigAgentActive ? undefined : flushActiveAutosave}
+              onClose={onClose ? () => void closePanel() : undefined}
+              actions={(
+                <>
+                  {!isLoreConfigAgentActive && (isCreatorActive || isOpeningPresetActive || draft) ? (
+                    <AutosaveStatusIndicator
+                      status={activeAutosaveStatus}
+                      error={activeAutosaveError}
+                      onRetry={flushActiveAutosave}
+                    />
+                  ) : null}
+                  {activeMode === 'lore' && !isLoreConfigAgentActive && !isCreatorActive && !isOpeningPresetActive && draft && (
+                    <Button className={iconActionClassName} variant="outline" size="icon" disabled={saving} onClick={handleDelete} aria-label={t('settingPanel.deleteLore')}>
+                      <Trash2 data-icon="inline-start" />
+                    </Button>
+                  )}
+                </>
+              )}
+              className="bg-[var(--nova-surface-2)] text-[var(--nova-text)]"
+              topbarClassName="min-h-12"
+            >
+              {activeMode === 'lore' ? (
+                <>
+                  {loading ? (
+                    <LoadingState label={t('common.loading')} className="h-full min-h-0" />
+                  ) : items.length === 0 && !loadError && !activeId ? (
+                    <EmptyState
+                      icon={Database}
+                      title={t('settingPanel.lore.emptyTitle')}
+                      description={t('settingPanel.lore.emptyDescription')}
+                      action={{ label: t('settingPanel.lore.emptyAction'), onClick: () => void handleCreateLore() }}
+                      variant="page"
+                    />
+                  ) : activeId === LORE_CONFIG_AGENT_ENTRY_ID ? (
+                    <ConfigManagerChat
+                      projectId={projectId}
+                      origin="lore"
+                      resourceId={LORE_CONFIG_AGENT_ENTRY_ID}
+                      context={{ item_count: String(items.length) }}
+                      onMutated={() => {
+                        void refreshItems()
+                        notifyLoreUpdated({ projectId })
+                      }}
+                    />
+                  ) : activeId === CREATOR_ENTRY_ID ? (
+                    <CreatorEditor content={creatorContent} setContent={setCreatorContent} onSave={flushActiveAutosave} />
+                  ) : activeId === INTERACTIVE_OPENING_PRESET_ENTRY_ID ? (
+                    <OpeningPresetEditor presets={openingPresets} activeId={activeOpeningPresetId} setActiveId={setActiveOpeningPresetId} setPresets={setOpeningPresets} onSave={flushActiveAutosave} />
+                  ) : (
+                    <LoreEditor
+                      projectId={projectId}
+                      draft={draft}
+                      tagDraft={tagDraft}
+                      residentTotalBytes={residentLoreBytes}
+                      imagePresets={imagePresets}
+                      imagePresetId={selectedLoreImagePresetId()}
+                      imageInstruction={loreImageInstruction}
+                      imageBusyAction={loreImageBusy && loreImageBusy.itemId === draft?.id ? loreImageBusy.action : ''}
+                      searchQuery={query}
+                      setDraft={setDraft}
+                      setTagDraft={setTagDraft}
+                      onImagePresetChange={setActiveImagePresetId}
+                      setImageInstruction={setLoreImageInstruction}
+                      onGenerateImage={() => void handleGenerateLoreImage()}
+                      onUploadImage={(file) => void handleUploadLoreImage(file)}
+                      onClearImage={() => void handleClearLoreImage()}
+                      onSave={flushActiveAutosave}
+                      documentReview={documentReview}
+                      documentReviewNavigationIntent={documentReviewNavigationIntent}
+                      onPrepareReviewSnapshot={prepareLoreReviewSnapshot}
+                    />
+                  )}
+                </>
+              ) : (
+                <CreatorEditor content={creatorContent} setContent={setCreatorContent} onSave={flushActiveAutosave} />
+              )}
+            </FeaturePageShell>
+          </main>
         )}
       </AdaptiveSurface>
+      <LoreClassificationDialog
+        open={loreClassificationOpen}
+        projectId={projectId}
+        onOpenChange={setLoreClassificationOpen}
+        onApplied={(nextItems) => {
+          setItems(nextItems)
+          const selectedItem = nextItems.find((item) => item.id === activeId)
+          if (selectedItem) mergeSavedLoreItem(selectedItem)
+          notifyLoreUpdated({ projectId, ids: selectedItem ? [selectedItem.id] : [] })
+        }}
+      />
       <LoreImageBatchDialog
         open={loreImageBatchOpen}
+        projectId={projectId}
         items={items}
         query={loreImageBatchQuery}
         type={loreImageBatchType}
@@ -989,38 +1191,24 @@ export function SettingPanel({ mode, workspace = '', tellers: externalTellers = 
         onRun={() => void handleRunLoreImageBatch()}
         onAbort={handleAbortLoreImageBatch}
       />
-      <AlertDialog open={Boolean(deleteLoreTarget)} onOpenChange={(open) => {
-        if (!open && !saving) setDeleteLoreTarget(null)
-      }}>
-        <AlertDialogContent className="border-[var(--nova-border)] bg-[var(--nova-surface)] text-[var(--nova-text)]">
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t('settingPanel.deleteLore')}</AlertDialogTitle>
-            <AlertDialogDescription className="text-[var(--nova-text-muted)]">
-              {t('settingPanel.confirmDeleteLore', { name: deleteLoreTarget?.name || '' })}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={saving}>{t('common.cancel')}</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-[var(--nova-danger-bg)] text-[var(--nova-danger)] hover:bg-[var(--nova-danger-bg)]"
-              disabled={saving || !deleteLoreTarget}
-              onClick={(event) => {
-                event.preventDefault()
-                void confirmDeleteLoreTarget()
-              }}
-            >
-              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-              {t('common.delete')}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmDialog
+        open={Boolean(deleteLoreTarget)}
+        onOpenChange={(open) => {
+          if (!open && !saving) setDeleteLoreTarget(null)
+        }}
+        title={t('settingPanel.deleteLore')}
+        description={t('settingPanel.confirmDeleteLore', { name: deleteLoreTarget?.name || '' })}
+        confirmLabel={t('common.delete')}
+        tone="danger"
+        onConfirm={confirmDeleteLoreTarget}
+      />
     </section>
   )
 }
 
 interface LoreImageBatchDialogProps {
   open: boolean
+  projectId: string
   items: LoreItem[]
   query: string
   type: LoreType | 'all'
@@ -1044,6 +1232,7 @@ interface LoreImageBatchDialogProps {
 
 function LoreImageBatchDialog({
   open,
+  projectId,
   items,
   query,
   type,
@@ -1111,10 +1300,12 @@ function LoreImageBatchDialog({
               <SelectValue />
             </SelectTrigger>
             <SelectContent className="nova-panel border text-[var(--nova-text)]">
-              <SelectItem value="all">{t('settingPanel.loreImage.typeAll')}</SelectItem>
-              {LORE_TYPE_FILTER_OPTIONS.map((option) => (
-                <SelectItem key={option} value={option}>{loreTypeLabel(option, t)}</SelectItem>
-              ))}
+              <SelectGroup>
+                <SelectItem value="all">{t('settingPanel.loreImage.typeAll')}</SelectItem>
+                {LORE_TYPE_FILTER_OPTIONS.map((option) => (
+                  <SelectItem key={option} value={option}>{loreTypeLabel(option, t)}</SelectItem>
+                ))}
+              </SelectGroup>
             </SelectContent>
           </Select>
         </div>
@@ -1147,7 +1338,7 @@ function LoreImageBatchDialog({
                     onChange={() => toggleSelected(item.id)}
                     aria-label={item.name}
                   />
-                  <LoreImageBatchThumb item={item} />
+                  <LoreImageBatchThumb projectId={projectId} item={item} />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate font-medium text-[var(--nova-text)]">{item.name}</span>
                     <span className="mt-0.5 block truncate text-[11px] text-[var(--nova-text-faint)]">{loreTypeLabel(item.type, t)} · {item.brief_description || t('settingPanel.loreImage.missingImage')}</span>
@@ -1180,11 +1371,13 @@ function LoreImageBatchDialog({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className="nova-panel border text-[var(--nova-text)]">
-                  {imagePresets.length > 0 ? imagePresets.map((preset) => (
-                    <SelectItem key={preset.id} value={preset.id}>{preset.name}</SelectItem>
-                  )) : (
-                    <SelectItem value="game-cg">{t('settingPanel.editor.defaultImagePreset')}</SelectItem>
-                  )}
+                  <SelectGroup>
+                    {imagePresets.length > 0 ? imagePresets.map((preset) => (
+                      <SelectItem key={preset.id} value={preset.id}>{preset.name}</SelectItem>
+                    )) : (
+                      <SelectItem value="game-cg">{t('settingPanel.editor.defaultImagePreset')}</SelectItem>
+                    )}
+                  </SelectGroup>
                 </SelectContent>
               </Select>
             </label>
@@ -1205,7 +1398,7 @@ function LoreImageBatchDialog({
             </Button>
           ) : (
             <Button className={actionButtonClassName} variant="outline" size="sm" disabled={selectedIds.length === 0} onClick={onRun}>
-              <Sparkles className="h-4 w-4" />
+              <Sparkles data-icon="inline-start" />
               {t('settingPanel.loreImage.startBatch')}
             </Button>
           )}
@@ -1215,7 +1408,7 @@ function LoreImageBatchDialog({
   )
 }
 
-function LoreImageBatchThumb({ item }: { item: LoreItem }) {
+function LoreImageBatchThumb({ projectId, item }: { projectId: string; item: LoreItem }) {
   const imagePath = item.image?.image_path || ''
   if (!imagePath) {
     return (
@@ -1226,19 +1419,9 @@ function LoreImageBatchThumb({ item }: { item: LoreItem }) {
   }
   return (
     <span className="h-10 w-10 shrink-0 overflow-hidden rounded-md border border-[var(--nova-border)] bg-[var(--nova-surface)]">
-      <img src={workspaceAssetURL(imagePath)} alt="" className="h-full w-full object-cover" />
+      <img src={projectFileAssetURL(projectId, imagePath)} alt="" className="h-full w-full object-cover" />
     </span>
   )
-}
-
-const actionButtonClassName = 'nova-nav-item gap-1.5 border-[var(--nova-border)] bg-[var(--nova-surface-2)] text-[var(--nova-text-muted)] hover:bg-[var(--nova-hover)] hover:text-[var(--nova-text)]'
-const iconActionClassName = 'nova-nav-item border-[var(--nova-border)] bg-[var(--nova-surface-2)] text-[var(--nova-text-muted)] hover:bg-[var(--nova-hover)] hover:text-[var(--nova-text)]'
-
-function splitTags(value: string) {
-  return value
-    .split(/[，,]/)
-    .map((tag) => tag.trim())
-    .filter(Boolean)
 }
 
 function filterLoreImageBatchItems(items: LoreItem[], query: string, type: LoreType | 'all') {
@@ -1270,7 +1453,7 @@ function parseSSEData<T>(event: SSEEvent): T | null {
   try {
     return JSON.parse(event.data) as T
   } catch (err) {
-    console.warn('[lore-image] SSE 数据解析失败', event.event, err)
+    console.warn('[lore-image] failed to parse SSE payload', event.event, err)
     return null
   }
 }
@@ -1278,25 +1461,6 @@ function parseSSEData<T>(event: SSEEvent): T | null {
 function isAbortError(err: unknown) {
   if (typeof DOMException !== 'undefined' && err instanceof DOMException && err.name === 'AbortError') return true
   return err instanceof Error && err.name === 'AbortError'
-}
-
-function loreDraftSignature(item: Partial<LoreItem>, tagDraft: string) {
-  return JSON.stringify({
-    ...item,
-    tags: splitTags(tagDraft),
-  })
-}
-
-function tellerDraftSignature(teller: Partial<Teller>, tagDraft: string) {
-  return JSON.stringify({
-    ...teller,
-    tags: splitTags(tagDraft),
-  })
-}
-
-function notifyLoreUpdated(itemIds: string[] = []) {
-  if (typeof window === 'undefined') return
-  window.dispatchEvent(new CustomEvent('nova:lore-updated', { detail: { item_ids: itemIds } }))
 }
 
 function notifyOpeningPresetUpdated() {
@@ -1310,22 +1474,23 @@ function ModeIcon({ mode }: { mode: SettingPanelMode }) {
   return <Database className="h-3.5 w-3.5 shrink-0 text-[var(--nova-text-muted)]" />
 }
 
-function loreTypeLabel(type: LoreItem['type'], t: (key: string) => string) {
-  const key = `lore.type.${type}`
-  const label = t(key)
-  return label === key ? t('lore.type.other') : label
-}
-
-function loreImportanceLabel(importance: LoreItem['importance'], t: (key: string) => string) {
-  const key = `lore.importance.${importance}`
-  const label = t(key)
-  return label === key ? t('lore.importance.important') : label
-}
-
-function loreLoadModeLabel(loadMode: LoreItem['load_mode'] | undefined, t: (key: string) => string) {
-  const key = `lore.loadMode.${loadMode || 'auto'}`
-  const label = t(key)
-  return label === key ? t('lore.loadMode.auto') : label
+function loreItemToDirectoryItem(item: LoreItem, projectId: string, t: (key: string) => string): ResourceDirectoryItem {
+  const imagePath = item.image?.image_path || ''
+  const badges: ResourceDirectoryBadge[] = [{
+    label: item.load_mode === 'resident' ? t('settingPanel.lore.loadModeBadge.resident') : t('settingPanel.lore.loadModeBadge.onDemand'),
+    title: loreLoadModeLabel(item.load_mode, t),
+    tone: item.load_mode === 'resident' ? 'default' : 'outline',
+  }]
+  if (item.enabled === false) {
+    badges.push({ label: t('settingPanel.disabled'), tone: 'muted' })
+  }
+  return {
+    id: item.id,
+    title: item.name,
+    thumbnailUrl: imagePath ? projectFileAssetURL(projectId, imagePath) : null,
+    badges,
+    disabled: item.enabled === false,
+  }
 }
 
 function panelTitle(mode: SettingPanelMode, t: (key: string) => string) {
@@ -1334,76 +1499,12 @@ function panelTitle(mode: SettingPanelMode, t: (key: string) => string) {
   return t('settingPanel.mode.lore')
 }
 
-function editorTitle(mode: SettingPanelMode, draft: LoreItem | null, tellerDraft: Teller | null, imagePresetDraft: ImagePreset | null, presetResourceKind: PresetResourceKind, t: (key: string) => string) {
+function editorTitle(mode: Exclude<SettingPanelMode, 'teller'>, draft: LoreItem | null, t: (key: string) => string) {
   if (mode === 'creator') return CREATOR_PATH
-  if (mode === 'teller' && presetResourceKind === 'image') return imagePresetDraft?.name || t('settingPanel.editor.defaultImagePreset')
-  if (mode === 'teller') return tellerDraft?.name || t('settingPanel.editor.defaultTeller')
   return draft?.name || t('settingPanel.mode.lore')
 }
 
-function editorSubtitle(mode: SettingPanelMode, draft: LoreItem | null, tellerDraft: Teller | null, imagePresetDraft: ImagePreset | null, presetResourceKind: PresetResourceKind, t: (key: string) => string) {
-  if (mode === 'creator') return t('settingPanel.editor.creatorSubtitle')
-  if (mode === 'teller' && presetResourceKind === 'image') return imagePresetDraft?.description || t('settingPanel.editor.imagePresetSubtitle')
-  if (mode === 'teller') return tellerDraft?.description || t('settingPanel.editor.tellerSubtitle')
+function editorSubtitle(draft: LoreItem | null, t: (key: string) => string) {
   if (!draft) return t('settingPanel.editor.loreSubtitle')
   return `${draft.enabled === false ? t('settingPanel.disabled') : t('settingPanel.enabled')} · ${loreTypeLabel(draft.type, t)} · ${loreImportanceLabel(draft.importance, t)} · ${loreLoadModeLabel(draft.load_mode, t)} · ${(draft.tags || []).join('，') || t('settingPanel.editor.noTags')}`
-}
-
-function newTellerDraft(): Partial<Teller> {
-  const id = `custom-${Date.now()}`
-  return {
-    id,
-    name: '自定义叙事',
-    description: '新的叙事方案',
-    random_event_rate: 0.15,
-    style_rules: [],
-    tags: ['自定义'],
-    context_policy: {
-      creator: 'always',
-      lore: 'relevant',
-      runtime_state: 'always',
-    },
-    slots: [
-      {
-        id: 'identity',
-        name: '系统提示',
-        target: 'system',
-        enabled: true,
-        content: '你是一套自定义叙事方案。你要明确影响故事的题材倾向、角色反应、剧情裁定、节奏推进和长期叙事原则。',
-      },
-      {
-        id: 'turn_context',
-        name: '本轮上下文',
-        target: 'turn_context',
-        enabled: true,
-        content: '每轮都要让用户行动带来具体后果，并主动制造符合叙事风格的反馈、阻碍、发现、NPC 反应、代价、暗线推进或新的行动入口。',
-      },
-      {
-        id: 'state_memory',
-        name: '记忆沉淀规则',
-        target: 'state_memory',
-        enabled: true,
-        content: '记录本回合已经成立的关系变化、风险、线索、资源、暗线和可继续行动的入口。',
-      },
-    ],
-  }
-}
-
-function newImagePresetDraft(): Partial<ImagePreset> {
-  return {
-    id: `custom-image-${Date.now()}`,
-    name: '自定义图像方案',
-    description: '新的图像风格方案',
-    prompt: '描述画面风格、媒介、构图、镜头语言、光影、色彩、角色与环境呈现限制，以及需要避免的内容。',
-    tags: ['自定义'],
-    version: 1,
-    custom: true,
-  }
-}
-
-function imagePresetDraftSignature(preset: Partial<ImagePreset>, tagDraft: string) {
-  return JSON.stringify({
-    ...preset,
-    tags: splitTags(tagDraft),
-  })
 }

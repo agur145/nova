@@ -1,8 +1,14 @@
 package interactive
 
 import (
+	"context"
+	interactivestate "denova/internal/interactive/state"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
+
+	agent "github.com/alfredxw/denova/agent"
 )
 
 func sanitizeDisplayEvents(events []DisplayEvent) []DisplayEvent {
@@ -15,7 +21,7 @@ func sanitizeDisplayEvents(events []DisplayEvent) []DisplayEvent {
 		if role == "" {
 			continue
 		}
-		if role != "tool_call" && role != "tool_result" && role != "thinking" {
+		if role != "tool_call" && role != "tool_result" && role != "thinking" && role != DisplayEventRoleNarrative && !(role == "assistant" && event.SubAgent) {
 			continue
 		}
 		name := strings.TrimSpace(event.Name)
@@ -34,19 +40,141 @@ func sanitizeDisplayEvents(events []DisplayEvent) []DisplayEvent {
 			}
 		}
 		next := DisplayEvent{
-			ID:        strings.TrimSpace(event.ID),
-			Role:      role,
-			Content:   content,
-			Name:      name,
-			Args:      event.Args,
-			Status:    status,
-			Result:    event.Result,
-			CreatedAt: strings.TrimSpace(event.CreatedAt),
+			ID:                strings.TrimSpace(event.ID),
+			Role:              role,
+			Content:           content,
+			Name:              name,
+			Args:              event.Args,
+			Status:            status,
+			Result:            event.Result,
+			ToolPresentation:  normalizedToolPresentation(event.ToolPresentation),
+			CreatedAt:         strings.TrimSpace(event.CreatedAt),
+			AgentKind:         strings.TrimSpace(event.AgentKind),
+			AgentName:         strings.TrimSpace(event.AgentName),
+			RootAgentName:     strings.TrimSpace(event.RootAgentName),
+			RunPath:           trimStringSlice(event.RunPath),
+			SubAgent:          event.SubAgent,
+			RunID:             strings.TrimSpace(event.RunID),
+			SubAgentSessionID: strings.TrimSpace(event.SubAgentSessionID),
+			SubAgentType:      strings.TrimSpace(event.SubAgentType),
 		}
 		result = append(result, next)
 	}
 	if len(result) == 0 {
 		return nil
+	}
+	return result
+}
+
+func normalizedToolPresentation(presentation *agent.ToolPresentation) *agent.ToolPresentation {
+	if presentation == nil {
+		return nil
+	}
+	normalized, err := presentation.Normalize()
+	if err != nil {
+		return nil
+	}
+	return &normalized
+}
+
+func trimStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			result = append(result, value)
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func sanitizeModelContextMessages(messages []ModelContextMessage) []ModelContextMessage {
+	if len(messages) == 0 {
+		return nil
+	}
+	result := make([]ModelContextMessage, 0, len(messages))
+	for _, msg := range messages {
+		role := strings.TrimSpace(msg.Role)
+		switch role {
+		case "assistant":
+			calls := sanitizeModelContextToolCalls(msg.ToolCalls)
+			if len(calls) == 0 {
+				continue
+			}
+			result = append(result, ModelContextMessage{Role: role, Content: msg.Content, ToolCalls: calls})
+		case "tool":
+			toolCallID := strings.TrimSpace(msg.ToolCallID)
+			toolName := strings.TrimSpace(msg.ToolName)
+			if toolCallID == "" && toolName == "" {
+				continue
+			}
+			result = append(result, ModelContextMessage{
+				Role:       role,
+				Content:    msg.Content,
+				Name:       strings.TrimSpace(msg.Name),
+				ToolCallID: toolCallID,
+				ToolName:   toolName,
+				ToolResult: cloneModelContextToolResult(msg.ToolResult),
+			})
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// CloneModelContextMessages returns the same bounded model-only projection used
+// by story persistence, including an independently mutable tool-result summary.
+func CloneModelContextMessages(messages []ModelContextMessage) []ModelContextMessage {
+	return sanitizeModelContextMessages(messages)
+}
+
+func cloneModelContextToolResult(summary *agent.ToolResultSummary) *agent.ToolResultSummary {
+	if summary == nil {
+		return nil
+	}
+	return agent.CloneMessage(&agent.Message{ToolResult: summary}).ToolResult
+}
+
+func sanitizeModelContextToolCalls(calls []ModelContextToolCall) []ModelContextToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	result := make([]ModelContextToolCall, 0, len(calls))
+	for _, call := range calls {
+		name := strings.TrimSpace(call.Function.Name)
+		if name == "" {
+			continue
+		}
+		call.ID = strings.TrimSpace(call.ID)
+		if call.Index != nil {
+			index := *call.Index
+			call.Index = &index
+		}
+		if call.Extra != nil {
+			data, err := json.Marshal(call.Extra)
+			var extra map[string]any
+			if err == nil {
+				err = json.Unmarshal(data, &extra)
+			}
+			if err != nil {
+				call.Extra = nil
+			} else {
+				call.Extra = extra
+			}
+		}
+		if call.Type == "" {
+			call.Type = "function"
+		}
+		call.Function.Name = name
+		result = append(result, call)
 	}
 	return result
 }
@@ -158,9 +286,14 @@ func displayEventKey(event DisplayEvent) string {
 	return ""
 }
 
-func applyStateOp(state map[string]any, op StateOp) {
+func applyStateOp(state map[string]any, op interactivestate.Op) {
+	op.Path = canonicalStatePath(op.Path)
 	switch op.Op {
 	case "set":
+		if op.Value == nil {
+			slog.WarnContext(context.Background(), fmt.Sprintf("[interactive-state] skip legacy set operation without value path=%q location=internal/interactive/story_state.go", op.Path))
+			return
+		}
 		setPath(state, op.Path, op.Value)
 	case "merge":
 		current, _ := getPath(state, op.Path).(map[string]any)
@@ -186,9 +319,9 @@ func applyStateOp(state map[string]any, op StateOp) {
 		}
 		setPath(state, op.Path, next)
 	case "inc":
-		current, _ := getPath(state, op.Path).(float64)
+		current := numberFromAny(getPath(state, op.Path))
 		by := 1.0
-		if value, ok := op.Value.(float64); ok {
+		if value, ok := actorStateNumber(op.Value); ok {
 			by = value
 		}
 		setPath(state, op.Path, current+by)
@@ -197,7 +330,82 @@ func applyStateOp(state map[string]any, op StateOp) {
 	}
 }
 
+func applyActorStateOp(state map[string]any, op ActorStateOp) {
+	actorID := normalizeStatePanelActorID(op.ActorID)
+	fieldID := normalizeActorStateFieldName(op.FieldID)
+	if actorID == "" || fieldID == "" {
+		return
+	}
+	opName := strings.TrimSpace(op.Op)
+	if opName == "set" && op.Value == nil {
+		slog.WarnContext(context.Background(), fmt.Sprintf("[interactive-state] skip legacy Actor set operation without value actor_id=%q field_id=%q location=internal/interactive/story_state.go", actorID, fieldID))
+		return
+	}
+	actors, _ := state[actorStateRoot].(map[string]any)
+	if actors == nil {
+		actors = map[string]any{}
+		state[actorStateRoot] = actors
+	}
+	actor, _ := actors[actorID].(map[string]any)
+	if actor == nil {
+		actor = map[string]any{"id": actorID}
+		actors[actorID] = actor
+	}
+	fields, _ := actor["state"].(map[string]any)
+	if fields == nil {
+		fields = map[string]any{}
+		actor["state"] = fields
+	}
+	switch opName {
+	case "set":
+		fields[fieldID] = op.Value
+	case "inc":
+		current := numberFromAny(fields[fieldID])
+		by := 1.0
+		if value, ok := actorStateNumber(op.Value); ok {
+			by = value
+		}
+		fields[fieldID] = current + by
+	case "unset":
+		delete(fields, fieldID)
+	}
+}
+
+func normalizeActorStateOps(ops []ActorStateOp) []ActorStateOp {
+	if len(ops) == 0 {
+		return nil
+	}
+	result := make([]ActorStateOp, 0, len(ops))
+	for _, op := range ops {
+		op.Op = strings.TrimSpace(op.Op)
+		op.ActorID = normalizeStatePanelActorID(op.ActorID)
+		op.FieldID = normalizeActorStateFieldName(op.FieldID)
+		op.Reason = trimBytes(op.Reason, maxInteractiveTextBytes)
+		op.SourceTurnID = trimBytes(op.SourceTurnID, 128)
+		op.SourceKind = trimBytes(op.SourceKind, 128)
+		op.SourceID = trimBytes(op.SourceID, 128)
+		if validateActorStateOp(op) == nil {
+			result = append(result, op)
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
 func getPath(root map[string]any, path string) any {
+	path = strings.TrimSpace(path)
+	if value := getPathExact(root, path); value != nil {
+		return value
+	}
+	if next, ok := legacyActorStatePath(path); ok {
+		return getPathExact(root, next)
+	}
+	return nil
+}
+
+func getPathExact(root map[string]any, path string) any {
 	parts := strings.Split(path, ".")
 	var current any = root
 	for _, part := range parts {
@@ -211,6 +419,7 @@ func getPath(root map[string]any, path string) any {
 }
 
 func setPath(root map[string]any, path string, value any) {
+	path = canonicalStatePath(path)
 	parts := strings.Split(path, ".")
 	current := root
 	for _, part := range parts[:len(parts)-1] {
@@ -225,6 +434,7 @@ func setPath(root map[string]any, path string, value any) {
 }
 
 func unsetPath(root map[string]any, path string) {
+	path = canonicalStatePath(path)
 	parts := strings.Split(path, ".")
 	current := root
 	for _, part := range parts[:len(parts)-1] {
